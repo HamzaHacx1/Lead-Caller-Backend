@@ -1,0 +1,89 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum LeadStatus {
+  NEW
+  SCHEDULED
+  IN_PROGRESS
+  ANSWERED
+  VOICEMAIL
+  NO_ANSWER
+  FAILED
+  ERROR
+  ARCHIVED
+}
+
+enum AttemptOutcome {
+  SCHEDULED
+  ANSWERED
+  VOICEMAIL
+  NO_ANSWER
+  FAILED
+  CANCELED
+}
+
+model Agent {
+  id               Int      @id @default(autoincrement())
+  name             String
+  elevenAgentId    String   @unique
+  phoneNumberId    String
+  active           Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model Lead {
+  id             Int        @id @default(autoincrement())
+  fbLeadId       String?    @unique
+  fullName       String
+  email          String?
+  phone          String
+  timezone       String
+  source         String     @default("facebook_lead_ads")
+  status         LeadStatus @default(NEW)
+  attempts       Int        @default(0)
+  lastOutcome    AttemptOutcome?
+  lastAttemptAt  DateTime?
+  createdUserId  Int?
+  metadata       Json?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  callAttempts   CallAttempt[]
+}
+
+model CallAttempt {
+  id             Int            @id @default(autoincrement())
+  leadId         Int
+  attemptNumber  Int
+  status         AttemptOutcome @default(SCHEDULED)
+  scheduledAt    DateTime
+  startedAt      DateTime?
+  endedAt        DateTime?
+  conversationId String?        @unique
+  recordingUrl   String?
+  transcript     String?
+  payload        Json?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  Lead           Lead           @relation(fields: [leadId], references: [id])
+
+  @@index([leadId])
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         String   @default("admin")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}

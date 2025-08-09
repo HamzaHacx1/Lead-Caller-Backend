@@ -1,0 +1,57 @@
+# Node modules
+node_modules/
+**/node_modules/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# Build output
+dist/
+**/dist/
+build/
+**/build/
+
+# Cache
+.cache/
+**/.cache/
+.tmp/
+**/.tmp/
+coverage/
+**/coverage/
+
+# Prisma
+backend/prisma/generated/
+backend/prisma/migrations/**/steps.json
+backend/prisma/migrations/**/migration.sql # optional if you keep migrations in repo
+
+# PM2 logs
+*.pid
+*.pid.lock
+pids/
+pids/*
+
+# Local database files
+*.db
+*.sqlite
+*.sqlite-journal
+
+# Misc
+backend/src/uploads/
+frontend/.vite/
