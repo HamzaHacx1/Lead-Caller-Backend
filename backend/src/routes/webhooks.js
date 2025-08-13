@@ -362,7 +362,8 @@ r.post("/elevenlabs", async (req, res) => {
       postToExternal(crmPayload).catch(() => {});
 
       /** ---------- Retry only on FAILED ---------- */
-      if (outcome === "FAILED" && attemptsCount < 3) {
+      const retryable = ["FAILED", "NO_ANSWER", "VOICEMAIL"];
+      if (retryable.includes(outcome) && attemptsCount < 3) {
         const scheduledUnix = nextInsideWindowUnix(lead.timezone);
         const newAttempt = await prisma.callAttempt.create({
           data: {
