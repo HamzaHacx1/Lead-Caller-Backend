@@ -4,7 +4,7 @@ import fetch from "node-fetch";
 import crypto from "crypto";
 
 // import { callOutbound } from "../lib/elevenlabs.js"; // no longer used
-import { QUEBEC_TZ, getQuebecNow } from "../lib/quebecTime.js";
+import { QUEBEC_TZ, getQuebecNowAsync } from "../lib/quebecTime.js";
 import { nextInsideWindowUnix } from "../lib/schedule.js";
 
 const prisma = new PrismaClient();
@@ -144,7 +144,7 @@ function nextDayInsideWindowUnix(tz) {
 /** ---------- Route ---------- */
 r.post("/elevenlabs", async (req, res) => {
   try {
-    const qnow = getQuebecNow();
+    const qnow = getQuebecNowAsync();
     console.log(
       "[WEBHOOK] sig:",
       req.headers["elevenlabs-signature"],
