@@ -3,8 +3,9 @@ import { Router } from "express";
 import fetch from "node-fetch";
 import crypto from "crypto";
 
+// import { callOutbound } from "../lib/elevenlabs.js"; // no longer used
+import { QUEBEC_TZ, getQuebecNow } from "../lib/quebecTime.js";
 import { nextInsideWindowUnix } from "../lib/schedule.js";
-import { callOutbound } from "../lib/elevenlabs.js";
 
 const prisma = new PrismaClient();
 const r = Router();
@@ -36,7 +37,11 @@ function verifyHmac(req) {
   const hex = crypto.createHmac("sha256", secret).update(payload).digest("hex");
 
   try {
-    return crypto.timingSafeEqual(Buffer.from(hex), Buffer.from(v0));
+    // compare decoded hex buffers
+    return crypto.timingSafeEqual(
+      Buffer.from(hex, "hex"),
+      Buffer.from(v0, "hex")
+    );
   } catch {
     return false;
   }
@@ -53,19 +58,23 @@ function normPhone(p) {
 }
 
 function mapOutcomeFromTranscription(data) {
-  const success = String(data.analysis?.call_successful || "").toLowerCase();
+  const cs = data.analysis?.call_successful;
+  const success =
+    cs === true ||
+    String(cs).toLowerCase() === "true" ||
+    String(cs).toLowerCase() === "success";
   const term = String(data.metadata?.termination_reason || "").toLowerCase();
 
-  if (success === "success") return "ANSWERED";
+  if (success) return "ANSWERED";
   if (term.includes("voicemail")) return "VOICEMAIL";
   if (
     term.includes("no_answer") ||
     term.includes("no-answer") ||
     term.includes("noanswer") ||
-    term.includes("silence")
+    term.includes("silence") ||
+    term.includes("busy")
   )
     return "NO_ANSWER";
-  if (term.includes("busy")) return "NO_ANSWER";
   if (
     term.includes("carrier_error") ||
     term.includes("error") ||
@@ -119,16 +128,32 @@ async function postToExternal(payload) {
   }
 }
 
+/** Schedule for the next day, using your existing call window rules */
+function nextDayInsideWindowUnix(tz) {
+  const zone = tz || process.env.DEFAULT_TZ || QUEBEC_TZ;
+  try {
+    // your nextInsideWindowUnix gives the *next* valid slot today;
+    // adding 24h moves it to the same slot tomorrow.
+    const todayNext = Number(nextInsideWindowUnix(zone));
+    if (Number.isFinite(todayNext)) return todayNext + 24 * 60 * 60; // seconds
+  } catch {}
+  // Fallback: exactly +24h from now (in seconds)
+  return Math.floor(Date.now() / 1000) + 24 * 60 * 60;
+}
+
 /** ---------- Route ---------- */
 r.post("/elevenlabs", async (req, res) => {
   try {
+    const qnow = getQuebecNow();
     console.log(
       "[WEBHOOK] sig:",
       req.headers["elevenlabs-signature"],
       "rawLen:",
       req.rawBody?.length,
       "type:",
-      req.body?.type
+      req.body?.type,
+      "quebecNow:",
+      qnow.label
     );
 
     const disableAuth = process.env.DISABLE_WEBHOOK_AUTH === "1";
@@ -174,6 +199,7 @@ r.post("/elevenlabs", async (req, res) => {
     let title = null;
     let termination = null;
 
+    /** ---------- New EL structured payloads ---------- */
     if (body.type === "post_call_transcription" && body.data) {
       const d = body.data;
       outcome = mapOutcomeFromTranscription(d);
@@ -200,11 +226,11 @@ r.post("/elevenlabs", async (req, res) => {
       const sysCalled = dyn.system__called_number || null;
       const sysCaller = dyn.system__caller_id || null;
 
+      // Candidate lead phones: external/caller only (avoid agent lines)
       const candidateLeadPhones = [
-        from_number,
-        sysCalled,
-        m.to_number,
-        m.phone_number,
+        from_number, // external/caller
+        sysCaller, // dynamic caller id if external
+        m.caller_number, // extra safety
       ]
         .map(normPhone)
         .filter(Boolean);
@@ -220,6 +246,9 @@ r.post("/elevenlabs", async (req, res) => {
       endedAt = m.ended_at ? new Date(m.ended_at) : new Date();
       transcriptArr = Array.isArray(d.transcript) ? d.transcript : null;
       transcriptStr = transcriptArr ? JSON.stringify(transcriptArr) : null;
+      if (transcriptStr && transcriptStr.length > 500_000) {
+        transcriptStr = transcriptStr.slice(0, 500_000);
+      }
       recordingUrl = d.recording_url || d.audio_url || null;
 
       // extras for CRM
@@ -231,6 +260,7 @@ r.post("/elevenlabs", async (req, res) => {
 
       // NEW: structured extractions
       const dc = pickDataCollections(d);
+      const dataCollectionsRaw = d?.analysis?.data_collection_results || {};
 
       /** ---------- Lead matching ---------- */
       let lead = null;
@@ -249,15 +279,11 @@ r.post("/elevenlabs", async (req, res) => {
           }
         }
       }
-      if (!lead && to_number) {
-        lead = await prisma.lead.findFirst({
-          where: { phone: to_number },
-          orderBy: { createdAt: "desc" },
-        });
-      }
+      // Do NOT match on agent/to number to avoid mis-association
+
       if (!lead && process.env.AUTO_CREATE_LEAD_FROM_WEBHOOK === "1") {
-        const tz = process.env.DEFAULT_TZ || "UTC";
-        const phoneGuess = candidateLeadPhones[0] || from_number || to_number;
+        const tz = process.env.DEFAULT_TZ || QUEBEC_TZ;
+        const phoneGuess = candidateLeadPhones[0] || from_number;
         if (phoneGuess) {
           lead = await prisma.lead.create({
             data: {
@@ -349,42 +375,34 @@ r.post("/elevenlabs", async (req, res) => {
         summary,
         summaryTitle: title,
 
-        // NEW: structured fields
+        // Structured fields + raw collection
         availability: dc.availability,
         job_status: dc.job_status,
         salary_expectations: dc.salary_expectations,
         job_type: dc.job_type,
         job_field: dc.job_field,
+        dataCollectionsRaw, // <---- full raw map
 
         transcript: transcriptArr || [],
         raw: body,
       };
       postToExternal(crmPayload).catch(() => {});
 
-      /** ---------- Retry only on FAILED ---------- */
+      /** ---------- Retry only on FAILED/NO_ANSWER/VOICEMAIL (next day) ---------- */
       const retryable = ["FAILED", "NO_ANSWER", "VOICEMAIL"];
       if (retryable.includes(outcome) && attemptsCount < 3) {
-        const scheduledUnix = nextInsideWindowUnix(lead.timezone);
-        const newAttempt = await prisma.callAttempt.create({
+        const scheduledUnix = nextDayInsideWindowUnix(
+          lead.timezone || QUEBEC_TZ
+        );
+        await prisma.callAttempt.create({
           data: {
             leadId: lead.id,
             attemptNumber: attemptsCount + 1,
             status: "SCHEDULED",
             scheduledAt: new Date(scheduledUnix * 1000),
+            metadata: { schedule_reason: outcome, hangup_on_voicemail: true },
           },
         });
-        const { conversation_id } = await callOutbound({
-          to: candidateLeadPhones[0] || from_number || to_number || lead.phone,
-          lead: { ...lead, scheduledUnix },
-          attemptNumber: attemptsCount + 1,
-          variables: {},
-        });
-        if (conversation_id) {
-          await prisma.callAttempt.update({
-            where: { id: newAttempt.id },
-            data: { conversationId: conversation_id },
-          });
-        }
       }
 
       console.log("[WEBHOOK] processed:", {
@@ -417,18 +435,18 @@ r.post("/elevenlabs", async (req, res) => {
       : typeof body?.transcript === "string"
       ? body.transcript
       : null;
+    if (transcriptStr && transcriptStr.length > 500_000) {
+      transcriptStr = transcriptStr.slice(0, 500_000);
+    }
     recordingUrl = body?.recording_url || null;
     startedAt = body?.started_at ? new Date(body.started_at) : null;
     endedAt = body?.ended_at ? new Date(body.ended_at) : new Date();
 
     let lead = null;
     if (leadId) lead = await prisma.lead.findUnique({ where: { id: leadId } });
-    if (!lead && to_number) {
-      lead = await prisma.lead.findFirst({
-        where: { phone: to_number },
-        orderBy: { createdAt: "desc" },
-      });
-    }
+
+    // Avoid matching by agent/to number here as well
+
     if (!lead) {
       console.warn("[WEBHOOK] lead not found (flat)", { leadId, to_number });
       return res.status(200).json({ ok: true, note: "lead_not_found" });
@@ -482,6 +500,19 @@ r.post("/elevenlabs", async (req, res) => {
     });
 
     // Flat payloads don't include data_collection_results; send nulls
+    const dc = body?.analysis?.data_collection_results;
+
+    function getDC(key) {
+      if (!dc) return null;
+      if (Array.isArray(dc)) {
+        return dc.find((i) => i?.key === key || i?.name === key)?.value ?? null;
+      }
+      if (typeof dc === "object") {
+        return dc[key]?.value ?? dc[key] ?? null;
+      }
+      return null;
+    }
+
     postToExternal({
       leadId: lead.id,
       fullName: lead.fullName,
@@ -494,21 +525,25 @@ r.post("/elevenlabs", async (req, res) => {
       durationSecs: null,
       costCents: null,
       terminationReason: null,
-      summary: null,
-      summaryTitle: null,
-      availability: null,
-      job_status: null,
-      salary_expectations: null,
-      job_type: null,
-      job_field: null,
+      summary: getDC("summary"),
+      summaryTitle: getDC("summaryTitle"),
+      availability: getDC("availability"),
+      job_status: getDC("job_status"),
+      salary_expectations: getDC("salary_expectations"),
+      job_type: getDC("job_type"),
+      job_field: getDC("job_field"),
+      dataCollectionsRaw: dc || {},
       transcript:
         transcriptArr ||
         (typeof body?.transcript === "string" ? body.transcript : null),
       raw: body,
     }).catch(() => {});
 
-    if (outcome === "FAILED" && attemptsCount < 3) {
-      const scheduledUnix = nextInsideWindowUnix(lead.timezone);
+    if (
+      ["FAILED", "NO_ANSWER", "VOICEMAIL"].includes(outcome) &&
+      attemptsCount < 3
+    ) {
+      const scheduledUnix = nextDayInsideWindowUnix(lead.timezone || QUEBEC_TZ);
       await prisma.callAttempt.create({
         data: {
           leadId: lead.id,
@@ -517,12 +552,7 @@ r.post("/elevenlabs", async (req, res) => {
           scheduledAt: new Date(scheduledUnix * 1000),
         },
       });
-      await callOutbound({
-        to: to_number || lead.phone,
-        lead: { ...lead, scheduledUnix },
-        attemptNumber: attemptsCount + 1,
-        variables: {},
-      });
+      // No immediate call-out here
     }
 
     console.log("[WEBHOOK] processed (flat):", {

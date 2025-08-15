@@ -1,3 +1,6 @@
+// ------------------------------------------------------------------
+// Datasource & Client
+// ------------------------------------------------------------------
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
@@ -7,6 +10,9 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// ------------------------------------------------------------------
+// Enums
+// ------------------------------------------------------------------
 enum LeadStatus {
   NEW
   SCHEDULED
@@ -28,34 +34,43 @@ enum AttemptOutcome {
   CANCELED
 }
 
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+// ------------------------------------------------------------------
+// Models
+// ------------------------------------------------------------------
 model Agent {
-  id               Int      @id @default(autoincrement())
-  name             String
-  elevenAgentId    String   @unique
-  phoneNumberId    String
-  active           Boolean  @default(true)
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  id            Int      @id @default(autoincrement())
+  name          String
+  elevenAgentId String   @unique
+  phoneNumberId String
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 }
 
 model Lead {
-  id             Int        @id @default(autoincrement())
-  fbLeadId       String?    @unique
-  fullName       String
-  email          String?
-  phone          String
-  timezone       String
-  source         String     @default("facebook_lead_ads")
-  status         LeadStatus @default(NEW)
-  attempts       Int        @default(0)
-  lastOutcome    AttemptOutcome?
-  lastAttemptAt  DateTime?
-  createdUserId  Int?
-  metadata       Json?
-  createdAt      DateTime   @default(now())
-  updatedAt      DateTime   @updatedAt
+  id            Int             @id @default(autoincrement())
+  fbLeadId      String?         @unique
+  fullName      String
+  email         String?
+  phone         String
+  timezone      String
+  source        String          @default("facebook_lead_ads")
+  status        LeadStatus      @default(NEW)
+  attempts      Int             @default(0)
+  lastOutcome   AttemptOutcome?
+  lastAttemptAt DateTime?
+  createdUserId Int?
+  metadata      Json?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
 
-  callAttempts   CallAttempt[]
+  callAttempts  CallAttempt[]
+  conversations Conversation[]
 }
 
 model CallAttempt {
@@ -66,6 +81,7 @@ model CallAttempt {
   scheduledAt    DateTime
   startedAt      DateTime?
   endedAt        DateTime?
+  // External provider conversation id (keep as-is; not the relation)
   conversationId String?        @unique
   recordingUrl   String?
   transcript     String?
@@ -73,7 +89,10 @@ model CallAttempt {
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 
-  Lead           Lead           @relation(fields: [leadId], references: [id])
+  Lead Lead @relation(fields: [leadId], references: [id])
+
+  // Back-relation for the 1:1 link from Conversation.callAttemptId
+  Conversation Conversation? @relation("CallAttemptToConversation")
 
   @@index([leadId])
 }
@@ -86,4 +105,38 @@ model User {
   role         String   @default("admin")
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+}
+
+// --------------------------- SMS Inbox -----------------------------
+model Conversation {
+  id           Int      @id @default(autoincrement())
+  leadId       Int
+  twilioNumber String
+  isOpen       Boolean  @default(true)
+  lastMsgAt    DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Optional 1:1 link to the call attempt that spawned this thread
+  callAttemptId Int?         @unique
+  CallAttempt   CallAttempt? @relation("CallAttemptToConversation", fields: [callAttemptId], references: [id])
+
+  Lead     Lead      @relation(fields: [leadId], references: [id])
+  messages Message[]
+
+  @@index([leadId, twilioNumber])
+  @@index([lastMsgAt])
+}
+
+model Message {
+  id             Int              @id @default(autoincrement())
+  conversationId Int
+  direction      MessageDirection
+  fromNumber     String // E.164
+  toNumber       String // E.164
+  body           String
+  providerSid    String?          @unique // Twilio SMxxxxxxxx
+  createdAt      DateTime         @default(now())
+
+  Conversation Conversation @relation(fields: [conversationId], references: [id])
 }
