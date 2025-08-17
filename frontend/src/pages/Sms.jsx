@@ -178,9 +178,48 @@ export default function Sms() {
                       : "bg-gray-200"
                   }`}
                 >
-                  {m.body}
+                  {/* text */}
+                  {m.body && <div>{m.body}</div>}
+
+                  {/* media */}
+                  {Array.isArray(m.mediaUrls) && m.mediaUrls.length > 0 && (
+                    <div className="mt-2 space-y-2">
+                      {m.mediaUrls.map((url, i) => {
+                        const ct = m.mediaContentTypes?.[i];
+                        const isImg =
+                          (ct && ct.startsWith("image/")) ||
+                          /\.(png|jpe?g|gif|webp|svg)$/i.test(url);
+
+                        return isImg ? (
+                          <a
+                            key={i}
+                            href={url}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            <img
+                              src={url}
+                              alt={`media ${i + 1}`}
+                              className="max-w-xs rounded"
+                            />
+                          </a>
+                        ) : (
+                          <a
+                            key={i}
+                            href={url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="underline"
+                          >
+                            Attachment {i + 1} {ct ? `(${ct})` : ""}
+                          </a>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               ))}
+
               <div ref={messagesEndRef} />
             </div>
             <form onSubmit={handleSend} className="flex border-t">

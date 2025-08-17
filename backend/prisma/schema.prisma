@@ -129,14 +129,21 @@ model Conversation {
 }
 
 model Message {
-  id             Int              @id @default(autoincrement())
-  conversationId Int
-  direction      MessageDirection
-  fromNumber     String // E.164
-  toNumber       String // E.164
-  body           String
-  providerSid    String?          @unique // Twilio SMxxxxxxxx
-  createdAt      DateTime         @default(now())
+  id                 Int              @id @default(autoincrement())
+  conversationId     Int
+  direction          MessageDirection
+  fromNumber         String           // E.164
+  toNumber           String           // E.164
+  body               String           @default("")  // allow media-only messages
+  providerSid        String?          @unique       // Twilio SMxxxxxxxx
+  createdAt          DateTime         @default(now())
 
-  Conversation Conversation @relation(fields: [conversationId], references: [id])
+  // NEW: read receipts + MMS support
+  readAt             DateTime?
+  mediaUrls          String[]         @default([])
+  mediaContentTypes  String[]         @default([])
+
+  Conversation       Conversation     @relation(fields: [conversationId], references: [id])
+
+  @@index([conversationId, id])
 }

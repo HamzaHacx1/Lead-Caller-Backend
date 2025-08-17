@@ -1,5 +1,5 @@
 import { PrismaClient } from "@prisma/client";
-// routes/sms.js  (ESM version)
+// routes/sms.js (ESM)
 import express from "express";
 import Twilio from "twilio";
 
@@ -21,70 +21,21 @@ if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
 }
 const twilioClient = Twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
-// Helpers that match your schema
+/* --------------------------- helpers --------------------------- */
 async function getOrCreateConversationForLead(leadId, twilioNumber) {
   const exists = await prisma.conversation.findFirst({
     where: { leadId, twilioNumber, isOpen: true },
   });
-  if (exists) return exists;
-  return prisma.conversation.create({
+  if (exists) return { conversation: exists, created: false };
+  const created = await prisma.conversation.create({
     data: { leadId, twilioNumber, isOpen: true, lastMsgAt: new Date() },
   });
-}
-async function sendSmsCore({ to, body, leadId }) {
-  if (!to || !body) throw new Error("to and body required");
-  if (!TWILIO_FROM_NUMBER && !TWILIO_MESSAGING_SERVICE_SID) {
-    throw new Error("Set TWILIO_FROM_NUMBER or TWILIO_MESSAGING_SERVICE_SID");
-  }
-
-  const twilioNumber = TWILIO_FROM_NUMBER || "messaging_service";
-  const conversation = leadId
-    ? await getOrCreateConversationForLead(Number(leadId), twilioNumber)
-    : await getOrCreateConversationByPhones(to, twilioNumber);
-
-  const msg = await prisma.message.create({
-    data: {
-      conversationId: conversation.id,
-      direction: "OUTBOUND",
-      fromNumber: TWILIO_FROM_NUMBER || twilioNumber,
-      toNumber: to,
-      body,
-    },
-  });
-
-  const payload = {
-    to,
-    body,
-    statusCallback: `${PUBLIC_API_BASE}/sms/status`,
-    ...(TWILIO_MESSAGING_SERVICE_SID
-      ? { messagingServiceSid: TWILIO_MESSAGING_SERVICE_SID }
-      : { from: TWILIO_FROM_NUMBER }),
-  };
-
-  const tw = await twilioClient.messages.create(payload);
-
-  await prisma.message.update({
-    where: { id: msg.id },
-    data: { providerSid: tw.sid },
-  });
-  await prisma.conversation.update({
-    where: { id: conversation.id },
-    data: { lastMsgAt: new Date() },
-  });
-
-  emit("sms:sent", { ...msg, providerSid: tw.sid });
-  return {
-    ok: true,
-    id: msg.id,
-    providerSid: tw.sid,
-    conversationId: conversation.id,
-  };
+  return { conversation: created, created: true };
 }
 
 async function getOrCreateConversationByPhones(leadPhone, twilioNumber) {
   let lead = await prisma.lead.findFirst({ where: { phone: leadPhone } });
   if (!lead) {
-    // Minimal placeholder. If you prefer to throw instead, tell me and we'll switch it.
     lead = await prisma.lead.create({
       data: {
         fullName: "Unknown Lead",
@@ -98,8 +49,8 @@ async function getOrCreateConversationByPhones(leadPhone, twilioNumber) {
   const exists = await prisma.conversation.findFirst({
     where: { leadId: lead.id, twilioNumber, isOpen: true },
   });
-  if (exists) return exists;
-  return prisma.conversation.create({
+  if (exists) return { conversation: exists, created: false };
+  const created = await prisma.conversation.create({
     data: {
       leadId: lead.id,
       twilioNumber,
@@ -107,84 +58,117 @@ async function getOrCreateConversationByPhones(leadPhone, twilioNumber) {
       lastMsgAt: new Date(),
     },
   });
+  return { conversation: created, created: true };
 }
 
-// 1) Outbound send
+/** Core SMS sender used by both /send and /conversations/:id/send */
+async function sendSmsCore({ to, body, leadId, mediaUrls = [] }) {
+  if (!to || !body) throw new Error("to and body required");
+  if (!TWILIO_FROM_NUMBER && !TWILIO_MESSAGING_SERVICE_SID) {
+    throw new Error("Set TWILIO_FROM_NUMBER or TWILIO_MESSAGING_SERVICE_SID");
+  }
+
+  const twilioNumber = TWILIO_FROM_NUMBER || "messaging_service";
+  const { conversation, created } = leadId
+    ? await getOrCreateConversationForLead(Number(leadId), twilioNumber)
+    : await getOrCreateConversationByPhones(to, twilioNumber);
+
+  // Create local message first (optimistic)
+  let msg = await prisma.message.create({
+    data: {
+      conversationId: conversation.id,
+      direction: "OUTBOUND",
+      fromNumber: TWILIO_FROM_NUMBER || twilioNumber,
+      toNumber: to,
+      body,
+      mediaUrls, // [] is fine
+      mediaContentTypes: [], // unknown for outbound unless you track them
+    },
+  });
+
+  const payload = {
+    to,
+    body,
+    statusCallback: `${PUBLIC_API_BASE}/sms/status`,
+    ...(mediaUrls.length ? { mediaUrl: mediaUrls } : {}),
+    ...(TWILIO_MESSAGING_SERVICE_SID
+      ? { messagingServiceSid: TWILIO_MESSAGING_SERVICE_SID }
+      : { from: TWILIO_FROM_NUMBER }),
+  };
+
+  const tw = await twilioClient.messages.create(payload);
+
+  // backfill provider SID and touch conversation
+  msg = await prisma.message.update({
+    where: { id: msg.id },
+    data: { providerSid: tw.sid },
+  });
+  const updatedConvo = await prisma.conversation.update({
+    where: { id: conversation.id },
+    data: { lastMsgAt: new Date() },
+    include: { Lead: true },
+  });
+
+  if (created) emit("sms:newConversation", updatedConvo);
+  emit("sms:sent", msg);
+
+  return {
+    ok: true,
+    id: msg.id,
+    providerSid: tw.sid,
+    conversationId: conversation.id,
+  };
+}
+
+/* ----------------------------- routes ----------------------------- */
+
+// Start/continue a conversation (body: { to, body, leadId?, mediaUrls? })
 router.post("/send", async (req, res) => {
   try {
-    const { leadId, to, body } = req.body || {};
-    if (!to || !body)
-      return res.status(400).json({ error: "to and body required" });
-    if (!TWILIO_FROM_NUMBER && !TWILIO_MESSAGING_SERVICE_SID) {
-      return res.status(500).json({
-        error: "Set TWILIO_FROM_NUMBER or TWILIO_MESSAGING_SERVICE_SID",
-      });
-    }
-
-    const twilioNumber = TWILIO_FROM_NUMBER || "messaging_service";
-    const conversation = leadId
-      ? await getOrCreateConversationForLead(Number(leadId), twilioNumber)
-      : await getOrCreateConversationByPhones(to, twilioNumber);
-
-    const msg = await prisma.message.create({
-      data: {
-        conversationId: conversation.id,
-        direction: "OUTBOUND",
-        fromNumber: TWILIO_FROM_NUMBER || twilioNumber,
-        toNumber: to,
-        body,
-      },
-    });
-
-    const payload = {
-      to,
-      body,
-      statusCallback: `${PUBLIC_API_BASE}/sms/status`,
-    };
-    if (TWILIO_MESSAGING_SERVICE_SID)
-      payload.messagingServiceSid = TWILIO_MESSAGING_SERVICE_SID;
-    else payload.from = TWILIO_FROM_NUMBER;
-
-    const tw = await twilioClient.messages.create(payload);
-
-    await prisma.message.update({
-      where: { id: msg.id },
-      data: { providerSid: tw.sid },
-    });
-    await prisma.conversation.update({
-      where: { id: conversation.id },
-      data: { lastMsgAt: new Date() },
-    });
-
-    emit("sms:sent", { ...msg, providerSid: tw.sid });
-    res.json({ ok: true, id: msg.id, providerSid: tw.sid });
+    const { to, body, leadId, mediaUrls = [] } = req.body || {};
+    const result = await sendSmsCore({ to, body, leadId, mediaUrls });
+    res.json(result);
   } catch (e) {
     console.error("sms/send error", e);
     res
-      .status(500)
+      .status(400)
       .json({ error: "send_failed", detail: e?.message || String(e) });
   }
 });
 
-// 2) Inbound webhook (Twilio -> us)
+// Twilio inbound webhook (MMS aware)
 router.post("/inbound", async (req, res) => {
   try {
     const { From, To, Body, MessageSid } = req.body || {};
     if (!From || !To) return res.status(200).send("<Response></Response>");
 
-    const convo = await getOrCreateConversationByPhones(From, To);
+    const n = Number(req.body.NumMedia || 0);
+    const mediaUrls = Array.from(
+      { length: n },
+      (_, i) => req.body[`MediaUrl${i}`]
+    ).filter(Boolean);
+    const mediaContentTypes = Array.from(
+      { length: n },
+      (_, i) => req.body[`MediaContentType${i}`]
+    ).filter(Boolean);
+
+    const { conversation } = await getOrCreateConversationByPhones(From, To);
+
     const msg = await prisma.message.create({
       data: {
-        conversationId: convo.id,
+        conversationId: conversation.id,
         direction: "INBOUND",
         fromNumber: From,
         toNumber: To,
         body: Body || "",
         providerSid: MessageSid || null,
+        mediaUrls,
+        mediaContentTypes,
       },
     });
+
     await prisma.conversation.update({
-      where: { id: convo.id },
+      where: { id: conversation.id },
       data: { lastMsgAt: new Date() },
     });
 
@@ -192,11 +176,12 @@ router.post("/inbound", async (req, res) => {
     res.status(200).send("<Response></Response>");
   } catch (e) {
     console.error("sms/inbound error", e);
-    res.status(200).send("<Response></Response>"); // Twilio expects 200
+    // Twilio still expects 200 to avoid retries
+    res.status(200).send("<Response></Response>");
   }
 });
 
-// 3) Status callback (Twilio -> us)
+// Twilio status callback
 router.post("/status", async (req, res) => {
   try {
     const { MessageSid, MessageStatus, ErrorCode, ErrorMessage } =
@@ -213,7 +198,8 @@ router.post("/status", async (req, res) => {
     res.status(200).send("OK");
   }
 });
-// GET /sms/conversations?open=true&leadId=123&limit=30&cursor=2025-08-17T20:00:00.000Z
+
+// List conversations (supports q/open/leadId/twilioNumber/cursor/limit)
 router.get("/conversations", async (req, res) => {
   const { open, leadId, cursor, limit = 30, q, twilioNumber } = req.query;
 
@@ -223,7 +209,8 @@ router.get("/conversations", async (req, res) => {
     ...(twilioNumber ? { twilioNumber } : {}),
     ...(q
       ? {
-          lead: {
+          // NOTE: relation field is "Lead", not "lead"
+          Lead: {
             OR: [
               { fullName: { contains: q, mode: "insensitive" } },
               { phone: { contains: q, mode: "insensitive" } },
@@ -251,7 +238,7 @@ router.get("/conversations", async (req, res) => {
   });
 });
 
-// GET /sms/messages?conversationId=1&limit=50&cursor=messageId
+// Get messages (newest first in DB; UI can reverse)
 router.get("/messages", async (req, res) => {
   const { conversationId, limit = 50, cursor } = req.query;
   if (!conversationId)
@@ -264,7 +251,7 @@ router.get("/messages", async (req, res) => {
 
   const msgs = await prisma.message.findMany({
     where,
-    orderBy: { id: "desc" }, // newest first for chat UIs
+    orderBy: { id: "desc" },
     take: Number(limit) + 1,
   });
 
@@ -276,25 +263,26 @@ router.get("/messages", async (req, res) => {
     nextCursor: hasMore ? msgs[msgs.length - 1]?.id : null,
   });
 });
-// POST /sms/conversations/:id/send  { body }
+
+// Send into an existing conversation
 router.post("/conversations/:id/send", async (req, res) => {
   try {
     const conversationId = Number(req.params.id);
-    const { body } = req.body || {};
+    const { body, mediaUrls = [] } = req.body || {};
     if (!body) return res.status(400).json({ error: "body required" });
 
     const convo = await prisma.conversation.findUnique({
       where: { id: conversationId },
-      include: { Lead: true }, // <-- uppercase L matches your schema
+      include: { Lead: true },
     });
     if (!convo)
       return res.status(404).json({ error: "conversation_not_found" });
 
-    // Use helper (NO router.handle recursion)
     const result = await sendSmsCore({
-      to: convo.Lead.phone, // <-- correct property
+      to: convo.Lead.phone,
       body,
-      leadId: convo.leadId, // <-- you already have it on the convo
+      leadId: convo.leadId,
+      mediaUrls,
     });
 
     res.json(result);
@@ -303,7 +291,8 @@ router.post("/conversations/:id/send", async (req, res) => {
     res.status(400).json({ error: e?.message || "send_failed" });
   }
 });
-// POST /sms/messages/mark-read { conversationId, upToId }
+
+// Mark inbound messages read
 router.post("/messages/mark-read", async (req, res) => {
   const { conversationId, upToId } = req.body || {};
   await prisma.message.updateMany({
@@ -317,7 +306,8 @@ router.post("/messages/mark-read", async (req, res) => {
   });
   res.json({ ok: true });
 });
-// PATCH /sms/conversations/:id { isOpen: false }
+
+// Open/close conversation
 router.patch("/conversations/:id", async (req, res) => {
   const { isOpen } = req.body || {};
   const updated = await prisma.conversation.update({
@@ -326,14 +316,15 @@ router.patch("/conversations/:id", async (req, res) => {
   });
   res.json(updated);
 });
-// GET /sms/search?q=term&limit=20
+
+// Search conversations + messages
 router.get("/search", async (req, res) => {
   const { q, limit = 20 } = req.query;
   if (!q) return res.json({ conversations: [], messages: [] });
 
   const conversations = await prisma.conversation.findMany({
     where: {
-      lead: {
+      Lead: {
         OR: [
           { fullName: { contains: q, mode: "insensitive" } },
           { phone: { contains: q, mode: "insensitive" } },
