@@ -190,7 +190,7 @@ router.get("/conversations", async (req, res) => {
     where,
     orderBy: { lastMsgAt: "desc" },
     take: Number(limit) + 1,
-    include: { lead: true },
+    include: { Lead: true },
   });
 
   const hasMore = rows.length > Number(limit);
@@ -241,7 +241,7 @@ router.post("/conversations/:id/send", async (req, res) => {
   // fetch lead to get the destination number
   const { lead } = await prisma.conversation.findUnique({
     where: { id: conversationId },
-    include: { lead: true },
+    include: { Lead: true },
   });
 
   req.body = { to: lead.phone, body, leadId: lead.id }; // reuse your /send logic
@@ -286,7 +286,7 @@ router.get("/search", async (req, res) => {
       },
     },
     take: Number(limit),
-    include: { lead: true },
+    include: { Lead: true },
     orderBy: { lastMsgAt: "desc" },
   });
 
