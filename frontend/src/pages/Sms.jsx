@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import React from "react";
 
 import { listConversations, getMessages, sendMessage } from "../lib/sms";
 import { socket } from "../lib/socket";

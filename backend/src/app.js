@@ -23,25 +23,18 @@ app.use(
   morgan(":method :url :status :res[content-length] - :response-time ms")
 );
 
-// Parse origins from env (comma-separated), fallback to localhost dev
-const origins = process.env.PUBLIC_WS_ORIGIN
-  ? process.env.PUBLIC_WS_ORIGIN.split(",").map((o) => o.trim())
-  : ["http://localhost:5173"];
-
-console.log("Allowed origins:", origins);
-
-// --- CORS ---
+// --- CORS (allow everything) ---
 app.use(
   cors({
-    origin: function (origin, callback) {
-      // allow requests with no origin (e.g. curl, mobile apps)
-      if (!origin) return callback(null, true);
-      if (origins.indexOf(origin) !== -1) {
-        return callback(null, true);
-      }
-      return callback(new Error("Not allowed by CORS: " + origin));
-    },
-    credentials: true,
+    origin: "*",
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: [
+      "Origin",
+      "X-Requested-With",
+      "Content-Type",
+      "Accept",
+      "Authorization",
+    ],
   })
 );
 
@@ -76,7 +69,10 @@ app.use("/sms", sms);
 // --- HTTP + Socket.IO ---
 const server = http.createServer(app);
 const io = new SocketIOServer(server, {
-  cors: { origin: origins, credentials: true },
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"],
+  },
 });
 setIo(io);
 
