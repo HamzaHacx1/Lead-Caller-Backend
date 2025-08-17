@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import { Readable } from "node:stream";
 // routes/sms.js (ESM)
 import express from "express";
 import Twilio from "twilio";
@@ -371,31 +372,37 @@ router.get("/media/:messageSid/:mediaSid", async (req, res) => {
     });
 
     if (!r.ok) {
+      // Pass through Twilio's status & text so you can see 401/403/404 clearly
       const text = await r.text();
-      return res.status(r.status).send(text);
+      res.status(r.status);
+      return res.send(text);
     }
 
-    // ✅ set correct content-type & stream body
-    res.set("Content-Type", r.headers.get("content-type"));
+    // Set content-type & simple caching
+    res.set(
+      "Content-Type",
+      r.headers.get("content-type") || "application/octet-stream"
+    );
     res.set("Cache-Control", "public, max-age=3600");
 
-    // Node 18+ fetch gives ReadableStream, need to pipe it
-    const reader = r.body.getReader();
-    const stream = new ReadableStream({
-      async pull(controller) {
-        const { done, value } = await reader.read();
-        if (done) {
-          controller.close();
-        } else {
-          controller.enqueue(value);
-        }
-      },
-    });
-
-    return new Response(stream).body.pipeTo(res);
+    // Convert Web ReadableStream -> Node stream
+    if (r.body) {
+      const nodeStream = Readable.fromWeb(r.body);
+      nodeStream.on("error", (err) => {
+        console.error("media proxy stream error", err);
+        if (!res.headersSent) res.status(502);
+        res.end("Upstream stream error");
+      });
+      nodeStream.pipe(res);
+    } else {
+      // Fallback (shouldn’t really happen)
+      const buf = Buffer.from(await r.arrayBuffer());
+      res.end(buf);
+    }
   } catch (err) {
     console.error("media proxy error", err);
-    res.status(500).send("Error fetching media from Twilio");
+    if (!res.headersSent) res.status(500);
+    res.end("Error fetching media from Twilio");
   }
 });
 

@@ -9,6 +9,14 @@ import {
 } from "../lib/sms";
 import { socket } from "../lib/socket";
 
+const API_BASE = "https://call.emploirapide.ca";
+
+function resolveMediaUrl(url) {
+  if (!url) return "";
+  if (url.startsWith("http")) return url; // already absolute
+  return `${API_BASE}${url}`; // prepend backend domain
+}
+
 export default function Sms() {
   const [conversations, setConversations] = useState([]);
   const [activeId, setActiveId] = useState(null);
@@ -190,15 +198,17 @@ export default function Sms() {
                           (ct && ct.startsWith("image/")) ||
                           /\.(png|jpe?g|gif|webp|svg)$/i.test(url);
 
+                        const resolved = resolveMediaUrl(url);
+
                         return isImg ? (
                           <a
                             key={i}
-                            href={url}
+                            href={resolved}
                             target="_blank"
                             rel="noreferrer"
                           >
                             <img
-                              src={url}
+                              src={resolved}
                               alt={`media ${i + 1}`}
                               className="max-w-xs rounded"
                             />
@@ -206,7 +216,7 @@ export default function Sms() {
                         ) : (
                           <a
                             key={i}
-                            href={url}
+                            href={resolved}
                             target="_blank"
                             rel="noreferrer"
                             className="underline"
