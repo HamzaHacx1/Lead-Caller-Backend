@@ -23,10 +23,24 @@ app.use(
   morgan(":method :url :status :res[content-length] - :response-time ms")
 );
 
-// --- CORS (allow absolutely everything) ---
+// --- Allowed origins (adjust if needed) ---
+const allowedOrigins = [
+  "http://localhost:5173", // local dev
+  "https://call.emploirapide.ca", // prod frontend
+];
+
+// --- CORS ---
 app.use(
   cors({
-    origin: "*",
+    origin: function (origin, callback) {
+      // allow requests with no origin (like curl, Postman)
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error("Not allowed by CORS: " + origin));
+    },
+    credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: [
       "Origin",
@@ -38,7 +52,7 @@ app.use(
   })
 );
 
-// Also handle preflight OPTIONS everywhere
+// Preflight handler
 app.options("*", cors());
 
 // --- Body parsers ---
@@ -55,7 +69,7 @@ app.use(
 // 2) URL-encoded (Twilio, forms)
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// 3) Multipart / form-data (optional, no files)
+// 3) Multipart / form-data
 const upload = multer();
 app.use(upload.none());
 
@@ -73,7 +87,8 @@ app.use("/sms", sms);
 const server = http.createServer(app);
 const io = new SocketIOServer(server, {
   cors: {
-    origin: "*",
+    origin: allowedOrigins,
+    credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   },
 });
