@@ -144,9 +144,15 @@ router.post("/inbound", async (req, res) => {
 
     const n = Number(req.body.NumMedia || 0);
 
-    // ✅ use MediaSid instead of parsing MediaUrl
     const mediaUrls = Array.from({ length: n }, (_, i) => {
-      const mediaSid = req.body[`MediaSid${i}`];
+      let mediaSid = req.body[`MediaSid${i}`];
+
+      // fallback: extract from MediaUrl if MediaSid not provided
+      if (!mediaSid && req.body[`MediaUrl${i}`]) {
+        const url = req.body[`MediaUrl${i}`];
+        mediaSid = url.split("/").pop();
+      }
+
       return `/api/sms/media/${MessageSid}/${mediaSid}`;
     });
 
@@ -155,7 +161,7 @@ router.post("/inbound", async (req, res) => {
       (_, i) => req.body[`MediaContentType${i}`]
     ).filter(Boolean);
 
-    // get or create conversation
+    // ✅ get conversation first
     const { conversation } = await getOrCreateConversationByPhones(From, To);
 
     const msg = await prisma.message.create({
