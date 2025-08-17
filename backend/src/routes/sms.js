@@ -143,15 +143,16 @@ router.post("/inbound", async (req, res) => {
     if (!From || !To) return res.status(200).send("<Response></Response>");
 
     const n = Number(req.body.NumMedia || 0);
-    const mediaUrls = Array.from(
-      { length: n },
-      (_, i) => req.body[`MediaUrl${i}`]
-    ).filter(Boolean);
+    const mediaUrls = Array.from({ length: n }, (_, i) => {
+      const mediaSid = req.body[`MediaUrl${i}`].split("/").pop();
+      return `/api/sms/media/${MessageSid}/${mediaSid}`;
+    });
     const mediaContentTypes = Array.from(
       { length: n },
       (_, i) => req.body[`MediaContentType${i}`]
     ).filter(Boolean);
 
+    // ✅ get conversation first
     const { conversation } = await getOrCreateConversationByPhones(From, To);
 
     const msg = await prisma.message.create({
@@ -176,7 +177,6 @@ router.post("/inbound", async (req, res) => {
     res.status(200).send("<Response></Response>");
   } catch (e) {
     console.error("sms/inbound error", e);
-    // Twilio still expects 200 to avoid retries
     res.status(200).send("<Response></Response>");
   }
 });
@@ -344,6 +344,35 @@ router.get("/search", async (req, res) => {
   });
 
   res.json({ conversations, messages });
+});
+// Secure Twilio Media Proxy
+router.get("/media/:messageSid/:mediaSid", async (req, res) => {
+  try {
+    const { messageSid, mediaSid } = req.params;
+
+    const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages/${messageSid}/Media/${mediaSid}`;
+
+    const auth = Buffer.from(
+      `${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`
+    ).toString("base64");
+
+    const r = await fetch(url, {
+      headers: { Authorization: `Basic ${auth}` },
+    });
+
+    if (!r.ok) {
+      const text = await r.text();
+      return res.status(r.status).send(text);
+    }
+
+    res.set("Content-Type", r.headers.get("content-type"));
+    res.set("Cache-Control", "public, max-age=3600");
+
+    r.body.pipe(res);
+  } catch (err) {
+    console.error("media proxy error", err);
+    res.status(500).send("Error fetching media from Twilio");
+  }
 });
 
 export default router;
