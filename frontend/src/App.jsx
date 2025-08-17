@@ -6,11 +6,13 @@ import Dashboard from "./pages/Dashboard";
 import Attempts from "./pages/Attempts";
 import Login from "./pages/Login";
 import Leads from "./pages/Leads";
+import Sms from "./pages/Sms";
 
 const tabs = [
   { key: "dashboard", label: "Dashboard", component: Dashboard },
   { key: "leads", label: "Leads", component: Leads },
   { key: "attempts", label: "Attempts", component: Attempts },
+  { key: "sms", label: "SMS", component: Sms }, // 👈 NEW
 ];
 
 export default function App() {
@@ -22,21 +24,21 @@ export default function App() {
 
   const Comp = tabs.find((t) => t.key === tab).component;
   return (
-    <div className="mx-auto max-w-6xl p-6">
-      <div className="mb-6 flex items-center justify-between">
+    <div className="max-w-6xl p-6 mx-auto">
+      <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold">Lead Dialer</h1>
         <button
           onClick={() => {
             setToken("");
             setAuthed(false);
           }}
-          className="rounded bg-slate-200 px-3 py-2 text-sm"
+          className="px-3 py-2 text-sm rounded bg-slate-200"
         >
           Logout
         </button>
       </div>
 
-      <div className="mb-4 flex gap-2">
+      <div className="flex gap-2 mb-4">
         {tabs.map((t) => (
           <button
             key={t.key}

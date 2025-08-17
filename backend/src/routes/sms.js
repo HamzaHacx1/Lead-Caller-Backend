@@ -1,9 +1,12 @@
-const express = require("express");
+import { PrismaClient } from "@prisma/client";
+// routes/sms.js  (ESM version)
+import express from "express";
+import Twilio from "twilio";
+
+import { emit } from "../lib/realtime.js";
+
 const router = express.Router();
-const { PrismaClient } = require("@prisma/client");
 const prisma = new PrismaClient();
-const Twilio = require("twilio");
-const { emit } = require("../lib/realtime").default;
 
 const {
   TWILIO_ACCOUNT_SID,
@@ -161,5 +164,139 @@ router.post("/status", async (req, res) => {
     res.status(200).send("OK");
   }
 });
+// GET /sms/conversations?open=true&leadId=123&limit=30&cursor=2025-08-17T20:00:00.000Z
+router.get("/conversations", async (req, res) => {
+  const { open, leadId, cursor, limit = 30, q, twilioNumber } = req.query;
 
-module.exports = router;
+  const where = {
+    ...(open !== undefined ? { isOpen: open === "true" } : {}),
+    ...(leadId ? { leadId: Number(leadId) } : {}),
+    ...(twilioNumber ? { twilioNumber } : {}),
+    ...(q
+      ? {
+          lead: {
+            OR: [
+              { fullName: { contains: q, mode: "insensitive" } },
+              { phone: { contains: q, mode: "insensitive" } },
+              { email: { contains: q, mode: "insensitive" } },
+            ],
+          },
+        }
+      : {}),
+    ...(cursor ? { lastMsgAt: { lt: new Date(cursor) } } : {}),
+  };
+
+  const rows = await prisma.conversation.findMany({
+    where,
+    orderBy: { lastMsgAt: "desc" },
+    take: Number(limit) + 1,
+    include: { lead: true },
+  });
+
+  const hasMore = rows.length > Number(limit);
+  if (hasMore) rows.pop();
+
+  res.json({
+    conversations: rows,
+    nextCursor: hasMore ? rows[rows.length - 1]?.lastMsgAt : null,
+  });
+});
+
+// GET /sms/messages?conversationId=1&limit=50&cursor=messageId
+router.get("/messages", async (req, res) => {
+  const { conversationId, limit = 50, cursor } = req.query;
+  if (!conversationId)
+    return res.status(400).json({ error: "conversationId required" });
+
+  const where = {
+    conversationId: Number(conversationId),
+    ...(cursor ? { id: { lt: Number(cursor) } } : {}),
+  };
+
+  const msgs = await prisma.message.findMany({
+    where,
+    orderBy: { id: "desc" }, // newest first for chat UIs
+    take: Number(limit) + 1,
+  });
+
+  const hasMore = msgs.length > Number(limit);
+  if (hasMore) msgs.pop();
+
+  res.json({
+    messages: msgs,
+    nextCursor: hasMore ? msgs[msgs.length - 1]?.id : null,
+  });
+});
+// POST /sms/conversations/:id/send  { body: "Hello" }
+router.post("/conversations/:id/send", async (req, res) => {
+  const conversationId = Number(req.params.id);
+  const { body } = req.body || {};
+  if (!body) return res.status(400).json({ error: "body required" });
+
+  const convo = await prisma.conversation.findUnique({
+    where: { id: conversationId },
+  });
+  if (!convo) return res.status(404).json({ error: "conversation_not_found" });
+
+  // fetch lead to get the destination number
+  const { lead } = await prisma.conversation.findUnique({
+    where: { id: conversationId },
+    include: { lead: true },
+  });
+
+  req.body = { to: lead.phone, body, leadId: lead.id }; // reuse your /send logic
+  return router.handle({ ...req, url: "/send", method: "POST" }, res);
+});
+// POST /sms/messages/mark-read { conversationId, upToId }
+router.post("/messages/mark-read", async (req, res) => {
+  const { conversationId, upToId } = req.body || {};
+  await prisma.message.updateMany({
+    where: {
+      conversationId: Number(conversationId),
+      id: { lte: Number(upToId) },
+      readAt: null,
+      direction: "INBOUND",
+    },
+    data: { readAt: new Date() },
+  });
+  res.json({ ok: true });
+});
+// PATCH /sms/conversations/:id { isOpen: false }
+router.patch("/conversations/:id", async (req, res) => {
+  const { isOpen } = req.body || {};
+  const updated = await prisma.conversation.update({
+    where: { id: Number(req.params.id) },
+    data: { isOpen, closedAt: isOpen === false ? new Date() : null },
+  });
+  res.json(updated);
+});
+// GET /sms/search?q=term&limit=20
+router.get("/search", async (req, res) => {
+  const { q, limit = 20 } = req.query;
+  if (!q) return res.json({ conversations: [], messages: [] });
+
+  const conversations = await prisma.conversation.findMany({
+    where: {
+      lead: {
+        OR: [
+          { fullName: { contains: q, mode: "insensitive" } },
+          { phone: { contains: q, mode: "insensitive" } },
+          { email: { contains: q, mode: "insensitive" } },
+        ],
+      },
+    },
+    take: Number(limit),
+    include: { lead: true },
+    orderBy: { lastMsgAt: "desc" },
+  });
+
+  const messages = await prisma.message.findMany({
+    where: { body: { contains: q, mode: "insensitive" } },
+    take: Number(limit),
+    orderBy: { id: "desc" },
+  });
+
+  res.json({ conversations, messages });
+});
+
+export default router;
