@@ -154,7 +154,7 @@ router.post("/inbound", async (req, res) => {
         mediaSid = url.split("/").pop();
       }
 
-      return `/api/sms/media/${MessageSid}/${mediaSid}`;
+      return `/sms/media/${MessageSid}/${mediaSid}`;
     });
 
     const mediaContentTypes = Array.from(
