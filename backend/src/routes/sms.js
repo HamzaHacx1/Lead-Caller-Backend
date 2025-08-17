@@ -143,16 +143,19 @@ router.post("/inbound", async (req, res) => {
     if (!From || !To) return res.status(200).send("<Response></Response>");
 
     const n = Number(req.body.NumMedia || 0);
+
+    // ✅ use MediaSid instead of parsing MediaUrl
     const mediaUrls = Array.from({ length: n }, (_, i) => {
-      const mediaSid = req.body[`MediaUrl${i}`].split("/").pop();
+      const mediaSid = req.body[`MediaSid${i}`];
       return `/api/sms/media/${MessageSid}/${mediaSid}`;
     });
+
     const mediaContentTypes = Array.from(
       { length: n },
       (_, i) => req.body[`MediaContentType${i}`]
     ).filter(Boolean);
 
-    // ✅ get conversation first
+    // get or create conversation
     const { conversation } = await getOrCreateConversationByPhones(From, To);
 
     const msg = await prisma.message.create({
@@ -346,6 +349,7 @@ router.get("/search", async (req, res) => {
   res.json({ conversations, messages });
 });
 // Secure Twilio Media Proxy
+// Secure Twilio Media Proxy
 router.get("/media/:messageSid/:mediaSid", async (req, res) => {
   try {
     const { messageSid, mediaSid } = req.params;
@@ -365,10 +369,24 @@ router.get("/media/:messageSid/:mediaSid", async (req, res) => {
       return res.status(r.status).send(text);
     }
 
+    // ✅ set correct content-type & stream body
     res.set("Content-Type", r.headers.get("content-type"));
     res.set("Cache-Control", "public, max-age=3600");
 
-    r.body.pipe(res);
+    // Node 18+ fetch gives ReadableStream, need to pipe it
+    const reader = r.body.getReader();
+    const stream = new ReadableStream({
+      async pull(controller) {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+        } else {
+          controller.enqueue(value);
+        }
+      },
+    });
+
+    return new Response(stream).body.pipeTo(res);
   } catch (err) {
     console.error("media proxy error", err);
     res.status(500).send("Error fetching media from Twilio");
