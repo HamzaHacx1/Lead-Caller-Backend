@@ -12,7 +12,7 @@ import cors from "cors";
 import webhooks from "./routes/webhooks.js";
 import metrics from "./routes/metrics.js";
 import authRoutes from "./routes/auth.js";
-import { setIo } from "./lib/realtime.js"; // <-- include .js
+import { setIo } from "./lib/realtime.js";
 import intake from "./routes/intake.js";
 import sms from "./routes/sms.js";
 
@@ -23,7 +23,7 @@ app.use(
   morgan(":method :url :status :res[content-length] - :response-time ms")
 );
 
-// --- CORS (allow everything) ---
+// --- CORS (allow absolutely everything) ---
 app.use(
   cors({
     origin: "*",
@@ -38,13 +38,16 @@ app.use(
   })
 );
 
+// Also handle preflight OPTIONS everywhere
+app.options("*", cors());
+
 // --- Body parsers ---
 // 1) JSON
 app.use(
   express.json({
     limit: "2mb",
     verify: (req, _res, buf) => {
-      req.rawBody = buf; // keep raw body for HMAC verification if needed
+      req.rawBody = buf;
     },
   })
 );
@@ -71,7 +74,7 @@ const server = http.createServer(app);
 const io = new SocketIOServer(server, {
   cors: {
     origin: "*",
-    methods: ["GET", "POST"],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   },
 });
 setIo(io);
@@ -83,5 +86,5 @@ io.on("connection", (socket) => {
 
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
-  console.log(`API + WS on :${PORT}`);
+  console.log(`API + WS running on :${PORT}`);
 });
