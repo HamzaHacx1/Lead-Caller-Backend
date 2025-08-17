@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import React from "react";
 
-import { listConversations, getMessages, sendMessage } from "../lib/sms";
+import {
+  listConversations,
+  getMessages,
+  sendMessage,
+  startConversation,
+} from "../lib/sms";
 import { socket } from "../lib/socket";
 
 export default function Sms() {
@@ -9,22 +14,27 @@ export default function Sms() {
   const [activeId, setActiveId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
+  const [newTo, setNewTo] = useState("");
+  const [newBody, setNewBody] = useState("");
   const messagesEndRef = useRef(null);
 
-  // Load conversations on mount
   useEffect(() => {
     refreshConversations();
   }, []);
 
   async function refreshConversations() {
     const res = await listConversations();
-    setConversations(res.conversations);
+    setConversations(res.conversations || []);
   }
 
   // Load messages when selecting a conversation
   useEffect(() => {
     if (!activeId) return;
-    getMessages(activeId).then((res) => setMessages(res.messages));
+    getMessages(activeId).then((res) => {
+      // server sends newest first; display oldest -> newest
+      const ordered = (res.messages || []).slice().reverse();
+      setMessages(ordered);
+    });
   }, [activeId]);
 
   // Scroll to bottom when messages update
@@ -37,7 +47,6 @@ export default function Sms() {
   // Realtime socket events
   useEffect(() => {
     function handleReceived(msg) {
-      // Add to messages if it's for active conversation
       if (msg.conversationId === activeId) {
         setMessages((prev) => [...prev, msg]);
       }
@@ -52,7 +61,11 @@ export default function Sms() {
     }
 
     function handleNewConversation(conv) {
-      setConversations((prev) => [conv, ...prev]);
+      // Ensure newest on top in sidebar
+      setConversations((prev) => {
+        const filtered = prev.filter((c) => c.id !== conv.id);
+        return [conv, ...filtered];
+      });
     }
 
     socket.on("sms:received", handleReceived);
@@ -72,9 +85,9 @@ export default function Sms() {
 
     const body = text.trim();
 
-    // Optimistic UI update
+    // Optimistic UI update (OUTBOUND)
     const tempMsg = {
-      id: Date.now(),
+      id: `tmp-${Date.now()}`,
       conversationId: activeId,
       body,
       direction: "OUTBOUND",
@@ -85,10 +98,54 @@ export default function Sms() {
     setText("");
   }
 
+  async function handleStartConversation(e) {
+    e.preventDefault();
+    const to = newTo.trim();
+    const body = newBody.trim();
+    if (!to || !body) return;
+
+    const res = await startConversation({ to, body });
+    // Pick the created conversation
+    if (res.conversationId) {
+      await refreshConversations();
+      setActiveId(res.conversationId);
+      setNewTo("");
+      setNewBody("");
+    }
+  }
+
   return (
     <div className="flex h-[600px] border rounded-lg overflow-hidden">
       {/* Sidebar */}
       <div className="w-1/3 overflow-y-auto border-r">
+        {/* New conversation composer */}
+        <form
+          onSubmit={handleStartConversation}
+          className="p-3 space-y-2 border-b"
+        >
+          <div className="text-sm font-semibold">New conversation</div>
+          <input
+            className="w-full p-2 border rounded"
+            placeholder="Recipient phone (E.164)"
+            value={newTo}
+            onChange={(e) => setNewTo(e.target.value)}
+          />
+          <textarea
+            className="w-full p-2 border rounded"
+            placeholder="Your message"
+            value={newBody}
+            onChange={(e) => setNewBody(e.target.value)}
+            rows={2}
+          />
+          <button
+            type="submit"
+            className="w-full px-3 py-2 text-white bg-black rounded"
+          >
+            Start
+          </button>
+        </form>
+
+        {/* Conversation list */}
         {conversations.map((c) => (
           <div
             key={c.id}
@@ -98,10 +155,7 @@ export default function Sms() {
             }`}
           >
             <div className="font-semibold">
-              {c.lead?.fullName || c.lead?.phone}
-            </div>
-            <div className="text-xs text-gray-500 truncate">
-              {c.lastMessage?.body || "No messages yet"}
+              {c.Lead?.fullName || c.Lead?.phone || "Unknown Lead"}
             </div>
             <div className="text-[10px] text-gray-400">
               {c.lastMsgAt && new Date(c.lastMsgAt).toLocaleString()}
@@ -143,7 +197,7 @@ export default function Sms() {
           </>
         ) : (
           <div className="flex items-center justify-center flex-1 text-gray-500">
-            Select a conversation
+            Select a conversation or start a new one
           </div>
         )}
       </div>

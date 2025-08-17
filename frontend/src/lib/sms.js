@@ -3,6 +3,8 @@ import { api } from "./api"; // your existing helper
 
 // your existing helper
 
+// your existing helper
+
 // Conversations
 export function listConversations(params = {}) {
   const query = new URLSearchParams(params).toString();
@@ -32,4 +34,11 @@ export function markMessagesRead(conversationId, upToId) {
 
 export function searchSms(q, limit = 20) {
   return api(`/sms/search?q=${encodeURIComponent(q)}&limit=${limit}`);
+}
+export function startConversation({ to, body, leadId }) {
+  return api(`/sms/send`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ to, body, leadId }),
+  });
 }

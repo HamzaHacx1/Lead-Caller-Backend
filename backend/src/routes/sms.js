@@ -31,6 +31,55 @@ async function getOrCreateConversationForLead(leadId, twilioNumber) {
     data: { leadId, twilioNumber, isOpen: true, lastMsgAt: new Date() },
   });
 }
+async function sendSmsCore({ to, body, leadId }) {
+  if (!to || !body) throw new Error("to and body required");
+  if (!TWILIO_FROM_NUMBER && !TWILIO_MESSAGING_SERVICE_SID) {
+    throw new Error("Set TWILIO_FROM_NUMBER or TWILIO_MESSAGING_SERVICE_SID");
+  }
+
+  const twilioNumber = TWILIO_FROM_NUMBER || "messaging_service";
+  const conversation = leadId
+    ? await getOrCreateConversationForLead(Number(leadId), twilioNumber)
+    : await getOrCreateConversationByPhones(to, twilioNumber);
+
+  const msg = await prisma.message.create({
+    data: {
+      conversationId: conversation.id,
+      direction: "OUTBOUND",
+      fromNumber: TWILIO_FROM_NUMBER || twilioNumber,
+      toNumber: to,
+      body,
+    },
+  });
+
+  const payload = {
+    to,
+    body,
+    statusCallback: `${PUBLIC_API_BASE}/sms/status`,
+    ...(TWILIO_MESSAGING_SERVICE_SID
+      ? { messagingServiceSid: TWILIO_MESSAGING_SERVICE_SID }
+      : { from: TWILIO_FROM_NUMBER }),
+  };
+
+  const tw = await twilioClient.messages.create(payload);
+
+  await prisma.message.update({
+    where: { id: msg.id },
+    data: { providerSid: tw.sid },
+  });
+  await prisma.conversation.update({
+    where: { id: conversation.id },
+    data: { lastMsgAt: new Date() },
+  });
+
+  emit("sms:sent", { ...msg, providerSid: tw.sid });
+  return {
+    ok: true,
+    id: msg.id,
+    providerSid: tw.sid,
+    conversationId: conversation.id,
+  };
+}
 
 async function getOrCreateConversationByPhones(leadPhone, twilioNumber) {
   let lead = await prisma.lead.findFirst({ where: { phone: leadPhone } });
@@ -227,25 +276,32 @@ router.get("/messages", async (req, res) => {
     nextCursor: hasMore ? msgs[msgs.length - 1]?.id : null,
   });
 });
-// POST /sms/conversations/:id/send  { body: "Hello" }
+// POST /sms/conversations/:id/send  { body }
 router.post("/conversations/:id/send", async (req, res) => {
-  const conversationId = Number(req.params.id);
-  const { body } = req.body || {};
-  if (!body) return res.status(400).json({ error: "body required" });
+  try {
+    const conversationId = Number(req.params.id);
+    const { body } = req.body || {};
+    if (!body) return res.status(400).json({ error: "body required" });
 
-  const convo = await prisma.conversation.findUnique({
-    where: { id: conversationId },
-  });
-  if (!convo) return res.status(404).json({ error: "conversation_not_found" });
+    const convo = await prisma.conversation.findUnique({
+      where: { id: conversationId },
+      include: { Lead: true }, // <-- uppercase L matches your schema
+    });
+    if (!convo)
+      return res.status(404).json({ error: "conversation_not_found" });
 
-  // fetch lead to get the destination number
-  const { lead } = await prisma.conversation.findUnique({
-    where: { id: conversationId },
-    include: { Lead: true },
-  });
+    // Use helper (NO router.handle recursion)
+    const result = await sendSmsCore({
+      to: convo.Lead.phone, // <-- correct property
+      body,
+      leadId: convo.leadId, // <-- you already have it on the convo
+    });
 
-  req.body = { to: lead.phone, body, leadId: lead.id }; // reuse your /send logic
-  return router.handle({ ...req, url: "/send", method: "POST" }, res);
+    res.json(result);
+  } catch (e) {
+    console.error("sms/conversations/:id/send error", e);
+    res.status(400).json({ error: e?.message || "send_failed" });
+  }
 });
 // POST /sms/messages/mark-read { conversationId, upToId }
 router.post("/messages/mark-read", async (req, res) => {
