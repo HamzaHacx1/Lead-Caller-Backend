@@ -23,25 +23,25 @@ app.use(
   morgan(":method :url :status :res[content-length] - :response-time ms")
 );
 
-// --- Allowed origins (adjust if needed) ---
+// --- Allowed origins ---
 const allowedOrigins = [
   "http://localhost:5173", // local dev
-  "https://call.emploirapide.ca", // prod frontend
+  "https://emploirapide.ca", // prod frontend
+  "https://call.emploirapide.ca", // prod subdomain
 ];
 
 // --- CORS ---
 app.use(
   cors({
     origin: function (origin, callback) {
-      // allow requests with no origin (like curl, Postman)
-      if (!origin) return callback(null, true);
-      if (allowedOrigins.includes(origin)) {
+      // Allow requests with no origin (like curl/Postman) OR matching whitelisted ones
+      if (!origin || allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
       return callback(new Error("Not allowed by CORS: " + origin));
     },
     credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: [
       "Origin",
       "X-Requested-With",
@@ -52,11 +52,11 @@ app.use(
   })
 );
 
-// Preflight handler
+// Explicit preflight
 app.options("*", cors());
 
 // --- Body parsers ---
-// 1) JSON
+// JSON (with raw buffer for signature verification)
 app.use(
   express.json({
     limit: "2mb",
@@ -66,10 +66,10 @@ app.use(
   })
 );
 
-// 2) URL-encoded (Twilio, forms)
+// URL-encoded (Twilio + forms)
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// 3) Multipart / form-data
+// Multipart / form-data
 const upload = multer();
 app.use(upload.none());
 
@@ -89,7 +89,7 @@ const io = new SocketIOServer(server, {
   cors: {
     origin: allowedOrigins,
     credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   },
 });
 setIo(io);

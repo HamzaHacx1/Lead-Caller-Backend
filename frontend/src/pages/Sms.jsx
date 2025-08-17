@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import React from "react";
 
 import { listConversations, getMessages, sendMessage } from "../lib/sms";
@@ -9,50 +9,85 @@ export default function Sms() {
   const [activeId, setActiveId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
+  const messagesEndRef = useRef(null);
 
-  // Load conversations
+  // Load conversations on mount
   useEffect(() => {
-    listConversations().then((res) => setConversations(res.conversations));
+    refreshConversations();
   }, []);
 
-  // Load messages when a conversation is selected
+  async function refreshConversations() {
+    const res = await listConversations();
+    setConversations(res.conversations);
+  }
+
+  // Load messages when selecting a conversation
   useEffect(() => {
     if (!activeId) return;
     getMessages(activeId).then((res) => setMessages(res.messages));
   }, [activeId]);
 
-  // Realtime socket updates
+  // Scroll to bottom when messages update
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages]);
+
+  // Realtime socket events
   useEffect(() => {
     function handleReceived(msg) {
+      // Add to messages if it's for active conversation
       if (msg.conversationId === activeId) {
-        setMessages((prev) => [msg, ...prev]);
+        setMessages((prev) => [...prev, msg]);
       }
+      refreshConversations();
     }
+
     function handleSent(msg) {
       if (msg.conversationId === activeId) {
-        setMessages((prev) => [msg, ...prev]);
+        setMessages((prev) => [...prev, msg]);
       }
+      refreshConversations();
+    }
+
+    function handleNewConversation(conv) {
+      setConversations((prev) => [conv, ...prev]);
     }
 
     socket.on("sms:received", handleReceived);
     socket.on("sms:sent", handleSent);
+    socket.on("sms:newConversation", handleNewConversation);
 
     return () => {
       socket.off("sms:received", handleReceived);
       socket.off("sms:sent", handleSent);
+      socket.off("sms:newConversation", handleNewConversation);
     };
   }, [activeId]);
 
   async function handleSend(e) {
     e.preventDefault();
-    if (!text.trim()) return;
-    await sendMessage(activeId, text.trim());
+    if (!text.trim() || !activeId) return;
+
+    const body = text.trim();
+
+    // Optimistic UI update
+    const tempMsg = {
+      id: Date.now(),
+      conversationId: activeId,
+      body,
+      direction: "OUTBOUND",
+    };
+    setMessages((prev) => [...prev, tempMsg]);
+
+    await sendMessage(activeId, body);
     setText("");
   }
 
   return (
     <div className="flex h-[600px] border rounded-lg overflow-hidden">
-      {/* Sidebar with conversations */}
+      {/* Sidebar */}
       <div className="w-1/3 overflow-y-auto border-r">
         {conversations.map((c) => (
           <div
@@ -65,8 +100,11 @@ export default function Sms() {
             <div className="font-semibold">
               {c.lead?.fullName || c.lead?.phone}
             </div>
-            <div className="text-xs text-gray-500">
-              Last: {new Date(c.lastMsgAt).toLocaleString()}
+            <div className="text-xs text-gray-500 truncate">
+              {c.lastMessage?.body || "No messages yet"}
+            </div>
+            <div className="text-[10px] text-gray-400">
+              {c.lastMsgAt && new Date(c.lastMsgAt).toLocaleString()}
             </div>
           </div>
         ))}
@@ -89,10 +127,11 @@ export default function Sms() {
                   {m.body}
                 </div>
               ))}
+              <div ref={messagesEndRef} />
             </div>
             <form onSubmit={handleSend} className="flex border-t">
               <input
-                className="flex-1 p-2"
+                className="flex-1 p-2 outline-none"
                 value={text}
                 onChange={(e) => setText(e.target.value)}
                 placeholder="Type a message..."
