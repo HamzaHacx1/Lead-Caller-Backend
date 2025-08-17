@@ -47,7 +47,7 @@ app.use(
 );
 
 // 2) Twilio posts application/x-www-form-urlencoded by default:
-app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.urlencoded({ extended: true })); // not false
 
 // --- Health ---
 app.get("/", (_req, res) => res.json({ ok: true }));
