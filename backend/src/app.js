@@ -28,6 +28,7 @@ const allowedOrigins = [
   "http://localhost:5173", // local dev
   "https://emploirapide.ca", // prod frontend
   "https://call.emploirapide.ca", // prod subdomain
+  "https://crm.emploirapide.ca", // prod CRM
 ];
 
 // --- CORS ---
