@@ -11,12 +11,6 @@ import { socket } from "../lib/socket";
 
 const API_BASE = "https://call.emploirapide.ca";
 
-function resolveMediaUrl(url) {
-  if (!url) return "";
-  if (url.startsWith("http")) return url; // already absolute
-  return `${API_BASE}${url}`; // prepend backend domain
-}
-
 export default function Sms() {
   const [conversations, setConversations] = useState([]);
   const [activeId, setActiveId] = useState(null);
@@ -33,6 +27,90 @@ export default function Sms() {
   async function refreshConversations() {
     const res = await listConversations();
     setConversations(res.conversations || []);
+  }
+  // --- helper: add a message uniquely, replacing temp when matching ---
+  function addMessageUnique(msg) {
+    setMessages((prev) => {
+      // already have this exact id?
+      if (prev.some((p) => p.id === msg.id)) return prev;
+
+      // if this is an OUTBOUND server message, try to replace a temp
+      if (msg.direction === "OUTBOUND") {
+        const now = Date.now();
+        const pruned = prev.filter((p) => {
+          const isTemp = typeof p.id === "string" && p.id.startsWith("tmp-");
+          const isRecent =
+            isTemp && now - Number(p.id.replace("tmp-", "")) < 15_000; // within 15s window
+          const sameConv = p.conversationId === msg.conversationId;
+          const sameBody = (p.body || "") === (msg.body || "");
+          // drop temp if same conversation + same body + very recent
+          return !(isTemp && isRecent && sameConv && sameBody);
+        });
+        return [...pruned, msg];
+      }
+
+      return [...prev, msg];
+    });
+  }
+
+  // Realtime socket events
+  useEffect(() => {
+    function handleReceived(msg) {
+      if (msg.conversationId === activeId) addMessageUnique(msg);
+      refreshConversations();
+    }
+
+    function handleSent(msg) {
+      if (msg.conversationId === activeId) addMessageUnique(msg);
+      refreshConversations();
+    }
+
+    function handleNewConversation(conv) {
+      setConversations((prev) => {
+        const filtered = prev.filter((c) => c.id !== conv.id);
+        return [conv, ...filtered];
+      });
+    }
+
+    socket.on("sms:received", handleReceived);
+    socket.on("sms:sent", handleSent);
+    socket.on("sms:newConversation", handleNewConversation);
+
+    return () => {
+      socket.off("sms:received", handleReceived);
+      socket.off("sms:sent", handleSent);
+      socket.off("sms:newConversation", handleNewConversation);
+    };
+  }, [activeId]);
+
+  // Send
+  async function handleSend(e) {
+    e.preventDefault();
+    if (!text.trim() || !activeId) return;
+
+    const body = text.trim();
+
+    // optimistic temp bubble
+    const tempId = `tmp-${Date.now()}`;
+    const tempMsg = {
+      id: tempId,
+      conversationId: activeId,
+      body,
+      direction: "OUTBOUND",
+    };
+    setMessages((prev) => [...prev, tempMsg]);
+    setText("");
+
+    try {
+      // if your sendMessage returns the saved message, use it to replace temp immediately
+      const saved = await sendMessage(activeId, body);
+      if (saved && saved.id) addMessageUnique(saved);
+      // else: the socket 'sms:sent' will arrive and replace the temp via addMessageUnique
+    } catch (err) {
+      // on error, remove the temp and optionally show a toast
+      setMessages((prev) => prev.filter((m) => m.id !== tempId));
+      console.error("Failed to send message:", err);
+    }
   }
 
   // Load messages when selecting a conversation
@@ -53,59 +131,25 @@ export default function Sms() {
   }, [messages]);
 
   // Realtime socket events
-  useEffect(() => {
-    function handleReceived(msg) {
-      if (msg.conversationId === activeId) {
-        setMessages((prev) => [...prev, msg]);
-      }
-      refreshConversations();
-    }
 
-    function handleSent(msg) {
-      if (msg.conversationId === activeId) {
-        setMessages((prev) => [...prev, msg]);
-      }
-      refreshConversations();
-    }
+  function resolveMediaUrl(url) {
+    if (!url) return "";
 
-    function handleNewConversation(conv) {
-      // Ensure newest on top in sidebar
-      setConversations((prev) => {
-        const filtered = prev.filter((c) => c.id !== conv.id);
-        return [conv, ...filtered];
-      });
-    }
+    // normalize old saved paths
+    let u = url.trim();
 
-    socket.on("sms:received", handleReceived);
-    socket.on("sms:sent", handleSent);
-    socket.on("sms:newConversation", handleNewConversation);
+    // fix older records that start with /api/sms/...
+    if (u.startsWith("/api/sms/")) u = u.replace("/api/sms/", "/sms/");
 
-    return () => {
-      socket.off("sms:received", handleReceived);
-      socket.off("sms:sent", handleSent);
-      socket.off("sms:newConversation", handleNewConversation);
-    };
-  }, [activeId]);
+    // skip obviously bad entries
+    if (u.endsWith("/undefined")) return "";
 
-  async function handleSend(e) {
-    e.preventDefault();
-    if (!text.trim() || !activeId) return;
+    // already absolute?
+    if (u.startsWith("http://") || u.startsWith("https://")) return u;
 
-    const body = text.trim();
-
-    // Optimistic UI update (OUTBOUND)
-    const tempMsg = {
-      id: `tmp-${Date.now()}`,
-      conversationId: activeId,
-      body,
-      direction: "OUTBOUND",
-    };
-    setMessages((prev) => [...prev, tempMsg]);
-
-    await sendMessage(activeId, body);
-    setText("");
+    // make absolute
+    return `${API_BASE}${u}`;
   }
-
   async function handleStartConversation(e) {
     e.preventDefault();
     const to = newTo.trim();
@@ -192,39 +236,56 @@ export default function Sms() {
                   {/* media */}
                   {Array.isArray(m.mediaUrls) && m.mediaUrls.length > 0 && (
                     <div className="mt-2 space-y-2">
-                      {m.mediaUrls.map((url, i) => {
-                        const ct = m.mediaContentTypes?.[i];
-                        const isImg =
-                          (ct && ct.startsWith("image/")) ||
-                          /\.(png|jpe?g|gif|webp|svg)$/i.test(url);
+                      {m.mediaUrls
+                        .map((raw, i) => {
+                          const ct = m.mediaContentTypes?.[i];
+                          const resolved = resolveMediaUrl(raw);
+                          if (!resolved) return null; // skip bad/undefined
 
-                        const resolved = resolveMediaUrl(url);
+                          const isImg =
+                            (ct && ct.startsWith("image/")) ||
+                            /\.(png|jpe?g|gif|webp|svg)$/i.test(resolved);
 
-                        return isImg ? (
-                          <a
-                            key={i}
-                            href={resolved}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            <img
-                              src={resolved}
-                              alt={`media ${i + 1}`}
-                              className="max-w-xs rounded"
-                            />
-                          </a>
-                        ) : (
-                          <a
-                            key={i}
-                            href={resolved}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="underline"
-                          >
-                            Attachment {i + 1} {ct ? `(${ct})` : ""}
-                          </a>
-                        );
-                      })}
+                          return isImg ? (
+                            <a
+                              key={`${m.id}-media-${i}`}
+                              href={resolved}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              <img
+                                src={resolved}
+                                alt={`media ${i + 1}`}
+                                className="rounded"
+                                style={{
+                                  maxWidth: 280,
+                                  maxHeight: 360,
+                                  objectFit: "contain",
+                                }}
+                                onError={(e) => {
+                                  console.warn(
+                                    "Image failed to load:",
+                                    resolved,
+                                    e?.nativeEvent
+                                  );
+                                  // optional: show a tiny fallback
+                                  e.currentTarget.style.display = "none";
+                                }}
+                              />
+                            </a>
+                          ) : (
+                            <a
+                              key={`${m.id}-media-${i}`}
+                              href={resolved}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="underline break-all"
+                            >
+                              Attachment {i + 1} {ct ? `(${ct})` : ""}
+                            </a>
+                          );
+                        })
+                        .filter(Boolean)}
                     </div>
                   )}
                 </div>
