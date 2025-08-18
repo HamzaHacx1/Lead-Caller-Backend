@@ -9,11 +9,21 @@ import {
   Bar,
   CartesianGrid,
   Legend,
+  Cell,
 } from "recharts";
 import React, { useEffect, useMemo, useState } from "react";
 
 import StatCard from "../components/StatCard";
 import { api } from "../lib/api";
+
+// Add near top of file
+const COLORS = {
+  leads: "#3B82F6",
+  answered: "#22C55E",
+  voicemail: "#F59E0B",
+  noAnswer: "#9CA3AF",
+  failed: "#EF4444",
+};
 
 /** ---------- tiny utils ---------- */
 function fmtISO(d) {
@@ -250,21 +260,43 @@ export default function Dashboard() {
                 <ResponsiveContainer width="100%" height="100%">
                   <AreaChart data={series}>
                     <defs>
-                      <linearGradient id="gLeads" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopOpacity={0.45} />
-                        <stop offset="95%" stopOpacity={0.05} />
+                      <linearGradient
+                        id="gLeadsFill"
+                        x1="0"
+                        y1="0"
+                        x2="0"
+                        y2="1"
+                      >
+                        <stop
+                          offset="5%"
+                          stopColor={COLORS.leads}
+                          stopOpacity={0.35}
+                        />
+                        <stop
+                          offset="95%"
+                          stopColor={COLORS.leads}
+                          stopOpacity={0.05}
+                        />
                       </linearGradient>
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="date" tick={{ fontSize: 12 }} />
                     <YAxis allowDecimals={false} />
-                    <Tooltip />
+                    <Tooltip
+                      contentStyle={{
+                        borderRadius: 12,
+                        border: "1px solid #e5e7eb",
+                      }}
+                    />
                     <Area
                       type="monotone"
                       dataKey="leads"
-                      fillOpacity={1}
-                      fill="url(#gLeads)"
+                      name="Leads"
+                      fill="url(#gLeadsFill)"
+                      stroke={COLORS.leads}
                       strokeWidth={2}
+                      dot={false}
+                      activeDot={{ r: 4 }}
                     />
                   </AreaChart>
                 </ResponsiveContainer>
@@ -281,15 +313,37 @@ export default function Dashboard() {
                   <BarChart
                     data={outcomes.map((d) => ({
                       outcome: d.outcome?.replace("_", " "),
+                      raw: d.outcome,
                       count: d.count,
                     }))}
                   >
                     <CartesianGrid strokeDasharray="3 3" />
                     <XAxis dataKey="outcome" tick={{ fontSize: 12 }} />
                     <YAxis allowDecimals={false} />
-                    <Tooltip />
+                    <Tooltip
+                      contentStyle={{
+                        borderRadius: 12,
+                        border: "1px solid #e5e7eb",
+                      }}
+                    />
                     <Legend />
-                    <Bar dataKey="count" name="Count" />
+                    {/* Single bar with dynamic fill per outcome */}
+                    <Bar dataKey="count" name="Count">
+                      {outcomes.map((d, idx) => {
+                        const key = (d.outcome || "").toUpperCase();
+                        const color =
+                          key === "ANSWERED"
+                            ? COLORS.answered
+                            : key === "VOICEMAIL"
+                            ? COLORS.voicemail
+                            : key === "NO_ANSWER"
+                            ? COLORS.noAnswer
+                            : key === "FAILED"
+                            ? COLORS.failed
+                            : COLORS.leads;
+                        return <Cell key={`cell-${idx}`} fill={color} />;
+                      })}
+                    </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -307,12 +361,37 @@ export default function Dashboard() {
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="date" tick={{ fontSize: 12 }} />
                   <YAxis allowDecimals={false} />
-                  <Tooltip />
+                  <Tooltip
+                    contentStyle={{
+                      borderRadius: 12,
+                      border: "1px solid #e5e7eb",
+                    }}
+                  />
                   <Legend />
-                  <Bar dataKey="answered" stackId="a" name="Answered" />
-                  <Bar dataKey="voicemail" stackId="a" name="Voicemail" />
-                  <Bar dataKey="noAnswer" stackId="a" name="No Answer" />
-                  <Bar dataKey="failed" stackId="a" name="Failed" />
+                  <Bar
+                    dataKey="answered"
+                    stackId="a"
+                    name="Answered"
+                    fill={COLORS.answered}
+                  />
+                  <Bar
+                    dataKey="voicemail"
+                    stackId="a"
+                    name="Voicemail"
+                    fill={COLORS.voicemail}
+                  />
+                  <Bar
+                    dataKey="noAnswer"
+                    stackId="a"
+                    name="No Answer"
+                    fill={COLORS.noAnswer}
+                  />
+                  <Bar
+                    dataKey="failed"
+                    stackId="a"
+                    name="Failed"
+                    fill={COLORS.failed}
+                  />
                 </BarChart>
               </ResponsiveContainer>
             </div>

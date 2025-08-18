@@ -5,21 +5,18 @@ import { getQuebecNowAsync, QUEBEC_TZ } from "./quebecTime.js";
 const START = Number(process.env.CALL_WINDOW_START || 9); // 9 AM
 const END = Number(process.env.CALL_WINDOW_END || 16); // 4 PM
 
-/**
- * Always returns Quebec TZ unless you intentionally override.
- */
+/** Always returns Quebec TZ unless you intentionally override. */
 export function pickTz(tz) {
   return tz && moment.tz.zone(tz) ? tz : QUEBEC_TZ;
 }
 
 /**
- * Get the next inside-window unix timestamp in QUEBEC time
- * Uses real-time Quebec clock from helper, falls back if API fails
+ * Get the next inside-window unix timestamp (seconds) in the given TZ.
+ * Uses API-backed epoch seconds; avoids parsing human strings.
  */
 export async function nextInsideWindowUnix(tz = QUEBEC_TZ) {
-  // Get real Quebec "now"
-  const qnow = await getQuebecNowAsync();
-  const now = moment.tz(qnow.label, pickTz(tz)); // label = "YYYY-MM-DD HH:mm:ss"
+  const qnow = await getQuebecNowAsync(); // { unixNow, tz, ... }
+  const now = moment.unix(qnow.unixNow).tz(pickTz(tz)); // reliable epoch-based
 
   const start = now.clone().hour(START).minute(0).second(0).millisecond(0);
   const end = now.clone().hour(END).minute(0).second(0).millisecond(0);
@@ -36,5 +33,5 @@ export async function nextInsideWindowUnix(tz = QUEBEC_TZ) {
     // After window → tomorrow at START
     when = start.add(1, "day");
   }
-  return when.unix();
+  return when.unix(); // seconds
 }

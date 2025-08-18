@@ -1,17 +1,22 @@
 import { PrismaClient } from "@prisma/client";
+import moment from "moment-timezone";
 import { Router } from "express";
 
 import { getQuebecNowAsync, QUEBEC_TZ } from "../lib/quebecTime.js";
 import { nextInsideWindowUnix, pickTz } from "../lib/schedule.js";
 import { callOutbound } from "../lib/elevenlabs.js";
-import { assertApiKey } from "../lib/auth.js";
+
+// import { assertApiKey } from "../lib/auth.js";
 
 const prisma = new PrismaClient();
 const r = Router();
 
+// Local constant (9→16 window length). Keep in sync with schedule.js if you change hours.
+const WINDOW_LEN_SECS = 7 * 3600;
+
 /**
  * Zapier/FB Lead Ads intake
- * Auth: API key (Authorization: Bearer <API_KEY>)
+ * Auth: API key (Authorization: Bearer <API_KEY>) if you enable assertApiKey
  * Supports:
  *  - forceNow: true       -> schedule ~now (5s)
  *  - ignoreWindow: true   -> bypass 9-4 window clamp
@@ -19,8 +24,7 @@ const r = Router();
  */
 r.post("/facebook", async (req, res) => {
   try {
-    // Optional: assert API key if you require it here
-    // assertApiKey(req);
+    // Optional: assertApiKey(req);
 
     const {
       fbLeadId,
@@ -34,7 +38,16 @@ r.post("/facebook", async (req, res) => {
       ignoreWindow = false,
     } = req.body || {};
 
-    const qnow = await getQuebecNowAsync(); // realtime from API (with safe fallback)
+    // Basic input sanity (prevents Prisma "Argument `phone` is missing.")
+    if (!full_name || !phone) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "missing_name_or_phone" });
+    }
+
+    const qnow = await getQuebecNowAsync(); // { unixNow, label, tz, ... }
+    const nowUnix = qnow.unixNow; // epoch seconds UTC
+
     console.log("[INTAKE] body:", {
       fbLeadId,
       full_name,
@@ -57,86 +70,94 @@ r.post("/facebook", async (req, res) => {
     // Choose a timezone (default to Quebec if nothing valid provided)
     const tz = pickTz(timezone) || process.env.DEFAULT_TZ || QUEBEC_TZ;
 
-    // Compute a schedule time that respects the window unless ignoreWindow
-    const WINDOW_LEN_SECS = 7 * 3600; // 9am -> 4pm
-    const nowUnix = qnow.unixNow; // UTC seconds (same everywhere)
-    let scheduledUnix;
+    // --- Compute schedule (MUST await) ---
+    const startUnix = await nextInsideWindowUnix(tz);
+    let scheduledUnix = forceNow
+      ? Math.floor(Date.now() / 1000) + 5
+      : await nextInsideWindowUnix(tz);
 
-    if (forceNow) {
-      scheduledUnix = Math.floor(Date.now() / 1000) + 5;
-      if (!ignoreWindow) {
-        // Clamp to inside window if "now" is outside
-        const startUnix = nextInsideWindowUnix(tz);
-        const endUnix = startUnix + WINDOW_LEN_SECS;
-        if (!(nowUnix >= startUnix && nowUnix <= endUnix)) {
-          scheduledUnix = startUnix;
-        }
+    if (!ignoreWindow) {
+      const endUnix = startUnix + WINDOW_LEN_SECS;
+      if (!(nowUnix >= startUnix && nowUnix <= endUnix)) {
+        scheduledUnix = startUnix;
       }
-    } else {
-      scheduledUnix = nextInsideWindowUnix(tz);
     }
 
-    // Create lead
+    if (!Number.isFinite(scheduledUnix)) {
+      throw new Error(`scheduledUnix not finite: ${scheduledUnix}`);
+    }
+    const scheduledAt = new Date(scheduledUnix * 1000);
+    if (Number.isNaN(scheduledAt.getTime())) {
+      throw new Error(`Invalid Date from scheduledUnix: ${scheduledUnix}`);
+    }
+
+    // --- Create lead snapshot ---
     const lead = await prisma.lead.create({
       data: {
         fbLeadId: fbLeadId || null,
         fullName: full_name,
         phone,
-        email,
+        email: email || null,
         timezone: tz,
         status: "SCHEDULED",
         metadata,
       },
     });
 
-    // First attempt record
+    // --- First attempt record (ensures row exists for the view/worker) ---
     const attemptNumber = 1;
     await prisma.callAttempt.create({
       data: {
         leadId: lead.id,
         attemptNumber,
         status: "SCHEDULED",
-        scheduledAt: new Date(scheduledUnix * 1000),
+        scheduledAt, // UTC instant (Date)
       },
     });
 
-    // ---- Determine if we should call immediately ----
-    // Voicemail detection flags that should skip any immediate run
+    // ---- Decide whether to call immediately ----
     const vmFlag =
       Boolean(variables?.voicemailDetected) ||
       Boolean(metadata?.voicemailDetected) ||
       Boolean(variables?.hangup_on_voicemail) ||
       Boolean(metadata?.hangup_on_voicemail);
 
-    // Are we currently inside the window (for this tz)?
-    // nextInsideWindowUnix(tz) gives the next valid slot; we check both today and yesterday windows.
-    const windowStart = nextInsideWindowUnix(tz);
-    const insideToday =
-      nowUnix >= windowStart && nowUnix <= windowStart + WINDOW_LEN_SECS;
-    const insideYesterday =
-      nowUnix >= windowStart - 24 * 3600 &&
-      nowUnix <= windowStart - 24 * 3600 + WINDOW_LEN_SECS;
-    const isInsideWindowNow = insideToday || insideYesterday;
+    // Robust "inside window now" check using epoch + TZ
+    const nowLocal = moment.unix(nowUnix).tz(tz);
+    const startLocal = nowLocal
+      .clone()
+      .hour(9)
+      .minute(0)
+      .second(0)
+      .millisecond(0);
+    const endLocal = nowLocal
+      .clone()
+      .hour(16)
+      .minute(0)
+      .second(0)
+      .millisecond(0);
+    const isInsideWindowNow =
+      nowLocal.isSameOrAfter(startLocal) && nowLocal.isSameOrBefore(endLocal);
 
-    // Conditions to run immediately:
-    //  - not flagged for voicemail
-    //  - AND (ignoreWindow || (forceNow && ignoreWindow) || (forceNow && isInsideWindowNow) || (!forceNow && isInsideWindowNow))
-    //    i.e., if ignoreWindow true -> always run now (unless vmFlag)
-    //          else only run now when actually inside the window
+    // Run now if: not voicemail AND (ignoreWindow || inside window)
     const shouldCallNow = !vmFlag && (ignoreWindow || isInsideWindowNow);
 
     if (shouldCallNow) {
-      await callOutbound({
-        to: phone,
-        lead: { ...lead, scheduledUnix },
-        attemptNumber,
-        variables,
-      });
-      console.log("[INTAKE] immediate call triggered:", {
-        leadId: lead.id,
-        scheduledUnix,
-        reason: ignoreWindow ? "ignoreWindow" : "insideWindowNow",
-      });
+      try {
+        await callOutbound({
+          to: phone,
+          lead: { ...lead, scheduledUnix },
+          attemptNumber,
+          variables,
+        });
+        console.log("[INTAKE] immediate call triggered:", {
+          leadId: lead.id,
+          scheduledUnix,
+          reason: ignoreWindow ? "ignoreWindow" : "insideWindowNow",
+        });
+      } catch (err) {
+        console.error("[INTAKE] callOutbound failed:", err?.message || err);
+      }
     } else {
       console.log("[INTAKE] immediate call skipped:", {
         leadId: lead.id,
@@ -145,10 +166,14 @@ r.post("/facebook", async (req, res) => {
       });
     }
 
-    res.json({ ok: true, leadId: lead.id, scheduled_time_unix: scheduledUnix });
+    return res.json({
+      ok: true,
+      leadId: lead.id,
+      scheduled_time_unix: scheduledUnix,
+    });
   } catch (e) {
     console.error(e);
-    res.status(500).json({ error: "intake_failed" });
+    return res.status(500).json({ ok: false, error: "intake_failed" });
   }
 });
 
