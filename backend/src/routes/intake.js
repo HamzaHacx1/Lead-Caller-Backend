@@ -2,8 +2,14 @@ import { PrismaClient } from "@prisma/client";
 import moment from "moment-timezone";
 import { Router } from "express";
 
+import {
+  START,
+  END,
+  WINDOW_LEN_SECS,
+  nextInsideWindowUnixQuebec,
+  pickTz, // still used for storing the lead's tz, but window is Quebec-anchored
+} from "../lib/schedule.js";
 import { getQuebecNowAsync, QUEBEC_TZ } from "../lib/quebecTime.js";
-import { nextInsideWindowUnix, pickTz } from "../lib/schedule.js";
 import { callOutbound } from "../lib/elevenlabs.js";
 
 // import { assertApiKey } from "../lib/auth.js";
@@ -11,16 +17,9 @@ import { callOutbound } from "../lib/elevenlabs.js";
 const prisma = new PrismaClient();
 const r = Router();
 
-// Local constant (9→16 window length). Keep in sync with schedule.js if you change hours.
-const WINDOW_LEN_SECS = 7 * 3600;
-
 /**
  * Zapier/FB Lead Ads intake
- * Auth: API key (Authorization: Bearer <API_KEY>) if you enable assertApiKey
- * Supports:
- *  - forceNow: true       -> schedule ~now (5s)
- *  - ignoreWindow: true   -> bypass 9-4 window clamp
- *  - voicemail flags: variables|metadata.{voicemailDetected|hangup_on_voicemail} -> skip immediate call
+ * Window is anchored to Quebec (America/Toronto) using CALL_WINDOW_START/END.
  */
 r.post("/facebook", async (req, res) => {
   try {
@@ -31,21 +30,21 @@ r.post("/facebook", async (req, res) => {
       full_name,
       phone,
       email,
-      timezone,
+      timezone, // stored on lead; does NOT affect window
       variables = {},
       metadata = {},
       forceNow = false,
       ignoreWindow = false,
     } = req.body || {};
 
-    // Basic input sanity (prevents Prisma "Argument `phone` is missing.")
+    // Basic input sanity
     if (!full_name || !phone) {
       return res
         .status(400)
         .json({ ok: false, error: "missing_name_or_phone" });
     }
 
-    const qnow = await getQuebecNowAsync(); // { unixNow, label, tz, ... }
+    const qnow = await getQuebecNowAsync(); // { unixNow, label, ... }
     const nowUnix = qnow.unixNow; // epoch seconds UTC
 
     console.log("[INTAKE] body:", {
@@ -56,6 +55,7 @@ r.post("/facebook", async (req, res) => {
       forceNow,
       ignoreWindow,
       quebecNow: qnow.label,
+      window: `${START}:00-${END}:00 Quebec`,
     });
 
     // Dedupe on fbLeadId
@@ -67,14 +67,14 @@ r.post("/facebook", async (req, res) => {
       }
     }
 
-    // Choose a timezone (default to Quebec if nothing valid provided)
-    const tz = pickTz(timezone) || process.env.DEFAULT_TZ || QUEBEC_TZ;
+    // Keep the lead's own tz for display/notifications; window is Quebec-anchored
+    const tzForLead = pickTz(timezone) || process.env.DEFAULT_TZ || QUEBEC_TZ;
 
-    // --- Compute schedule (MUST await) ---
-    const startUnix = await nextInsideWindowUnix(tz);
+    // --- Compute schedule in **Quebec** time (MUST await) ---
+    const startUnix = await nextInsideWindowUnixQuebec();
     let scheduledUnix = forceNow
       ? Math.floor(Date.now() / 1000) + 5
-      : await nextInsideWindowUnix(tz);
+      : await nextInsideWindowUnixQuebec();
 
     if (!ignoreWindow) {
       const endUnix = startUnix + WINDOW_LEN_SECS;
@@ -98,48 +98,46 @@ r.post("/facebook", async (req, res) => {
         fullName: full_name,
         phone,
         email: email || null,
-        timezone: tz,
+        timezone: tzForLead,
         status: "SCHEDULED",
         metadata,
       },
     });
 
-    // --- First attempt record (ensures row exists for the view/worker) ---
+    // --- First attempt record ---
     const attemptNumber = 1;
     await prisma.callAttempt.create({
       data: {
         leadId: lead.id,
         attemptNumber,
         status: "SCHEDULED",
-        scheduledAt, // UTC instant (Date)
+        scheduledAt, // UTC instant
       },
     });
 
-    // ---- Decide whether to call immediately ----
+    // ---- Decide whether to call immediately (Quebec window) ----
     const vmFlag =
       Boolean(variables?.voicemailDetected) ||
       Boolean(metadata?.voicemailDetected) ||
       Boolean(variables?.hangup_on_voicemail) ||
       Boolean(metadata?.hangup_on_voicemail);
 
-    // Robust "inside window now" check using epoch + TZ
-    const nowLocal = moment.unix(nowUnix).tz(tz);
+    const nowLocal = moment.unix(nowUnix).tz(QUEBEC_TZ);
     const startLocal = nowLocal
       .clone()
-      .hour(9)
+      .hour(START)
       .minute(0)
       .second(0)
       .millisecond(0);
     const endLocal = nowLocal
       .clone()
-      .hour(16)
+      .hour(END)
       .minute(0)
       .second(0)
       .millisecond(0);
     const isInsideWindowNow =
       nowLocal.isSameOrAfter(startLocal) && nowLocal.isSameOrBefore(endLocal);
 
-    // Run now if: not voicemail AND (ignoreWindow || inside window)
     const shouldCallNow = !vmFlag && (ignoreWindow || isInsideWindowNow);
 
     if (shouldCallNow) {
@@ -153,7 +151,7 @@ r.post("/facebook", async (req, res) => {
         console.log("[INTAKE] immediate call triggered:", {
           leadId: lead.id,
           scheduledUnix,
-          reason: ignoreWindow ? "ignoreWindow" : "insideWindowNow",
+          reason: ignoreWindow ? "ignoreWindow" : "insideQuebecWindowNow",
         });
       } catch (err) {
         console.error("[INTAKE] callOutbound failed:", err?.message || err);
@@ -161,7 +159,7 @@ r.post("/facebook", async (req, res) => {
     } else {
       console.log("[INTAKE] immediate call skipped:", {
         leadId: lead.id,
-        reason: vmFlag ? "voicemailDetected" : "outsideWindow",
+        reason: vmFlag ? "voicemailDetected" : "outsideQuebecWindow",
         scheduledUnix,
       });
     }
@@ -170,6 +168,8 @@ r.post("/facebook", async (req, res) => {
       ok: true,
       leadId: lead.id,
       scheduled_time_unix: scheduledUnix,
+      window_tz: QUEBEC_TZ,
+      window_hours: { start: START, end: END },
     });
   } catch (e) {
     console.error(e);
