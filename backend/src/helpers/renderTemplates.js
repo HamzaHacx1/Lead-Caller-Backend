@@ -1,12 +1,10 @@
-const fs = require("fs");
-const path = require("path");
-const Handlebars = require("handlebars");
+import Handlebars from "handlebars";
+import path from "path";
+import fs from "fs";
 
-function renderTemplate(fileName, data = {}) {
-  const filePath = path.join(__dirname, "..", "email-templates", fileName);
+export function renderTemplate(fileName, data = {}) {
+  const filePath = path.join(process.cwd(), "src", "email-templates", fileName);
   const source = fs.readFileSync(filePath, "utf8");
   const template = Handlebars.compile(source);
   return template(data);
 }
-
-module.exports = { renderTemplate };

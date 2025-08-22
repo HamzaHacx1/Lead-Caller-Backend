@@ -20,6 +20,7 @@
     "jsonwebtoken": "^9.0.2",
     "moment-timezone": "^0.5.45",
     "morgan": "^1.10.1",
+    "multer": "^2.0.2",
     "node-fetch": "^3.3.2",
     "socket.io": "^4.8.1",
     "twilio": "^5.8.0"
