@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tu veux un job ?</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #eaebed;
+      font-family: 'Inter', Arial, sans-serif;
+      color: #1e1e1e;
+    }
+
+    .email-container {
+      max-width: 600px;
+      margin: 30px auto;
+      background: #ffffff;
+      border-radius: 15px;
+      overflow: hidden;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.08);
+    }
+
+    .header {
+      background: linear-gradient(135deg, #FF9F00 0%, #E45F00 100%);
+      text-align: center;
+      padding: 20px 0;
+    }
+
+    .header-title {
+      font-size: 22px;
+      font-weight: 800;
+      color: #ffffff;
+      margin-bottom: 8px;
+    }
+
+    .header-subtitle {
+      font-size: 16px;
+      color: #ffe8d2;
+    }
+
+    .content {
+      padding: 30px 20px;
+    }
+
+    .content p {
+      font-size: 16px;
+      line-height: 1.6;
+      margin-bottom: 15px;
+    }
+
+    .cta-button {
+      display: inline-block;
+      background: linear-gradient(135deg, #FF9F00 0%, #E45F00 100%);
+      padding: 12px 30px;
+      color: white;
+      font-size: 16px;
+      font-weight: 700;
+      border-radius: 30px;
+      text-decoration: none;
+      box-shadow: 0 5px 18px rgba(228, 95, 0, 0.4);
+      transition: transform 0.3s ease;
+      margin-top: 20px;
+    }
+
+    .cta-button:hover {
+      transform: translateY(-2px);
+    }
+
+    .signature {
+      margin-top: 40px;
+      padding-top: 20px;
+      border-top: 1px solid #eaeaea;
+      font-size: 14px;
+      color: #888888;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="email-container">
+    <!-- Header -->
+    <div class="header">
+      <div class="header-title">Tu veux un job ?</div>
+      <div class="header-subtitle">Il te reste une seule étape 🚀</div>
+    </div>
+
+    <!-- Body -->
+    <div class="content">
+      <p>Salut 👋</p>
+
+      <p>Tu viens tout juste de remplir notre formulaire pour trouver un emploi rapidement 🙌</p>
+
+      <p><strong>Bonne nouvelle :</strong> t’es à 1 clic de finaliser ton inscription sur notre plateforme.</p>
+
+      <p>👉 Clique ici pour compléter ton profil (3 minutes max) :</p>
+
+      {{#if dashboard_link}}
+        <a href="{{dashboard_link}}" class="cta-button">➡️ INSCRIPTION ICI</a>
+      {{/if}}
+
+      <p style="margin-top:20px;">Tout est fait pour aller vite. Pas besoin de tout réécrire — on s’occupe de tout 💪</p>
+
+      <p>À bientôt !</p>
+
+      <div class="signature">
+        L’équipe EmploiRapide
+      </div>
+    </div>
+  </div>
+</body>
+</html>

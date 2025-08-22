@@ -10,6 +10,7 @@ import {
   pickTz, // still used for storing the lead's tz, but window is Quebec-anchored
 } from "../lib/schedule.js";
 import { getQuebecNowAsync, QUEBEC_TZ } from "../lib/quebecTime.js";
+import { renderTemplate } from "../helpers/renderTemplates.js";
 import { callOutbound } from "../lib/elevenlabs.js";
 
 // import { assertApiKey } from "../lib/auth.js";
@@ -103,7 +104,33 @@ r.post("/facebook", async (req, res) => {
         metadata,
       },
     });
+    if (email) {
+      try {
+        const html = renderTemplate("job-confirmation.html", {
+          dashboard_link: "https://emploirapide.ca/documents",
+        });
 
+        await sendEmail({
+          to: email,
+          subject: "Tu veux un job ? Il te reste une seule étape !",
+          html,
+          text: `Salut 👋\n\nTu viens de remplir notre formulaire 🙌\nBonne nouvelle : finalise ton inscription ici : ${process.env.DASHBOARD_URL}/complete-profile\n\nÀ bientôt !`,
+        });
+
+        console.log(`[INTAKE] email sent to ${email}`);
+      } catch (err) {
+        console.error("[INTAKE] sendEmail failed:", err?.message || err);
+      }
+    }
+    try {
+      await sendSMS({
+        to: phone,
+        body: `T’as commencé ton inscription, mais ton profil est incomplet. On t’a renvoyé le courriel. Pense à vérifier les spams si jamais.`,
+      });
+      console.log(`[INTAKE] SMS sent to ${phone}`);
+    } catch (err) {
+      console.error("[INTAKE] sendSMS failed:", err?.message || err);
+    }
     // --- First attempt record ---
     const attemptNumber = 1;
     await prisma.callAttempt.create({
