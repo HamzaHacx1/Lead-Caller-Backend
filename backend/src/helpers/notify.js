@@ -1,4 +1,3 @@
-// helpers/notify.js
 import nodemailer from "nodemailer";
 import twilio from "twilio";
 
@@ -25,23 +24,12 @@ function makeTwilioClient() {
   return twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 }
 
-/**
- * Send an SMS using Twilio
- * @param {Object} opts
- * @param {string} opts.to - E.164 number e.g. +15551234567
- * @param {string} opts.body - SMS text
- * @param {string} [opts.statusCallback] - webhook URL for delivery updates (optional)
- */
-async function sendSMS({ to, body, statusCallback } = {}) {
+export async function sendSMS({ to, body, statusCallback } = {}) {
   if (!to || !body) throw new Error('sendSMS: "to" and "body" are required');
   const client = makeTwilioClient();
 
-  const messagePayload = {
-    to,
-    body,
-  };
+  const messagePayload = { to, body };
 
-  // Prefer Messaging Service SID if provided, else use FROM number
   if (TWILIO_MESSAGING_SERVICE_SID) {
     messagePayload.messagingServiceSid = TWILIO_MESSAGING_SERVICE_SID;
   } else if (TWILLIO_FROM_NUMBER) {
@@ -79,20 +67,7 @@ function makeTransport() {
   });
 }
 
-/**
- * Send an email using Nodemailer
- * @param {Object} opts
- * @param {string|string[]} opts.to - recipient(s)
- * @param {string} opts.subject
- * @param {string} [opts.text] - plain text body
- * @param {string} [opts.html] - HTML body
- * @param {Array} [opts.attachments] - nodemailer attachment objects
- * @param {string|string[]} [opts.cc]
- * @param {string|string[]} [opts.bcc]
- * @param {string} [opts.replyTo]
- * @param {string} [opts.fromOverride] - override default from
- */
-async function sendEmail({
+export async function sendEmail({
   to,
   subject,
   text,
@@ -124,7 +99,6 @@ async function sendEmail({
 
   const info = await transporter.sendMail(mail);
 
-  // For most SMTPs, info.messageId is available; for some providers you may also get preview URLs in dev
   return {
     messageId: info.messageId,
     accepted: info.accepted,
@@ -135,14 +109,8 @@ async function sendEmail({
 }
 
 /** ---------- Optional tiny templating ---------- */
-function renderTemplate(template, vars = {}) {
+export function renderTemplate(template, vars = {}) {
   return template.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, key) => {
     return String(vars[key] ?? "");
   });
 }
-
-module.exports = {
-  sendSMS,
-  sendEmail,
-  renderTemplate,
-};

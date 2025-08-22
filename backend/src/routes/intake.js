@@ -11,6 +11,7 @@ import {
 } from "../lib/schedule.js";
 import { getQuebecNowAsync, QUEBEC_TZ } from "../lib/quebecTime.js";
 import { renderTemplate } from "../helpers/renderTemplates.js";
+import { sendEmail, sendSMS } from "../helpers/notify.js";
 import { callOutbound } from "../lib/elevenlabs.js";
 
 // import { assertApiKey } from "../lib/auth.js";
