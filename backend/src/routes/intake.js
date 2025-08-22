@@ -60,6 +60,33 @@ r.post("/facebook", async (req, res) => {
       window: `${START}:00-${END}:00 Quebec`,
     });
 
+    if (email) {
+      try {
+        const html = renderTemplate("notify.html", {
+          dashboard_link: "https://emploirapide.ca/documents",
+        });
+
+        await sendEmail({
+          to: email,
+          subject: "Tu veux un job ? Il te reste une seule étape !",
+          html,
+          text: `Salut 👋\n\nTu viens de remplir notre formulaire 🙌\nBonne nouvelle : finalise ton inscription ici : ${process.env.DASHBOARD_URL}/complete-profile\n\nÀ bientôt !`,
+        });
+
+        console.log(`[INTAKE] email sent to ${email}`);
+      } catch (err) {
+        console.error("[INTAKE] sendEmail failed:", err?.message || err);
+      }
+    }
+    try {
+      await sendSMS({
+        to: phone,
+        body: `T’as commencé ton inscription, mais ton profil est incomplet. On t’a renvoyé le courriel. Pense à vérifier les spams si jamais.`,
+      });
+      console.log(`[INTAKE] SMS sent to ${phone}`);
+    } catch (err) {
+      console.error("[INTAKE] sendSMS failed:", err?.message || err);
+    }
     // Dedupe on fbLeadId
     if (fbLeadId) {
       const exists = await prisma.lead.findUnique({ where: { fbLeadId } });
@@ -105,33 +132,6 @@ r.post("/facebook", async (req, res) => {
         metadata,
       },
     });
-    if (email) {
-      try {
-        const html = renderTemplate("notify.html", {
-          dashboard_link: "https://emploirapide.ca/documents",
-        });
-
-        await sendEmail({
-          to: email,
-          subject: "Tu veux un job ? Il te reste une seule étape !",
-          html,
-          text: `Salut 👋\n\nTu viens de remplir notre formulaire 🙌\nBonne nouvelle : finalise ton inscription ici : ${process.env.DASHBOARD_URL}/complete-profile\n\nÀ bientôt !`,
-        });
-
-        console.log(`[INTAKE] email sent to ${email}`);
-      } catch (err) {
-        console.error("[INTAKE] sendEmail failed:", err?.message || err);
-      }
-    }
-    try {
-      await sendSMS({
-        to: phone,
-        body: `T’as commencé ton inscription, mais ton profil est incomplet. On t’a renvoyé le courriel. Pense à vérifier les spams si jamais.`,
-      });
-      console.log(`[INTAKE] SMS sent to ${phone}`);
-    } catch (err) {
-      console.error("[INTAKE] sendSMS failed:", err?.message || err);
-    }
     // --- First attempt record ---
     const attemptNumber = 1;
     await prisma.callAttempt.create({
