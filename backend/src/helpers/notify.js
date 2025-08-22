@@ -5,7 +5,7 @@ const {
   TWILIO_ACCOUNT_SID,
   TWILIO_AUTH_TOKEN,
   TWILIO_MESSAGING_SERVICE_SID,
-  TWILLIO_FROM_NUMBER,
+  TWILIO_FROM_NUMBER,
   SMTP_HOST,
   SMTP_PORT,
   SMTP_SECURE,
@@ -32,8 +32,8 @@ export async function sendSMS({ to, body, statusCallback } = {}) {
 
   if (TWILIO_MESSAGING_SERVICE_SID) {
     messagePayload.messagingServiceSid = TWILIO_MESSAGING_SERVICE_SID;
-  } else if (TWILLIO_FROM_NUMBER) {
-    messagePayload.from = TWILLIO_FROM_NUMBER;
+  } else if (TWILIO_FROM_NUMBER) {
+    messagePayload.from = TWILIO_FROM_NUMBER;
   } else {
     throw new Error(
       "Provide TWILIO_MESSAGING_SERVICE_SID or TWILLIO_FROM_NUMBER in environment."
