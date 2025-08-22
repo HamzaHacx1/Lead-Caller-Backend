@@ -106,7 +106,7 @@ r.post("/facebook", async (req, res) => {
     });
     if (email) {
       try {
-        const html = renderTemplate("job-confirmation.html", {
+        const html = renderTemplate("notify.html", {
           dashboard_link: "https://emploirapide.ca/documents",
         });
 
