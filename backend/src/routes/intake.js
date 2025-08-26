@@ -8,14 +8,62 @@ import {
   WINDOW_LEN_SECS,
   nextInsideWindowUnixQuebec,
   pickTz,
+  QUEBEC_TZ,
 } from "../lib/schedule.js";
 import { renderTemplate } from "../helpers/renderTemplates.js";
-import { getQuebecNow, QUEBEC_TZ } from "../lib/quebecTime.js";
 import { sendEmail, sendSMS } from "../helpers/notify.js";
+import { getQuebecNow } from "../lib/quebecTime.js";
 import { callOutbound } from "../lib/elevenlabs.js";
 
 const prisma = new PrismaClient();
 const r = Router();
+
+/** Find next available slot with a 5-minute gap */
+async function findNextSlot(startUnix, endUnix, tz) {
+  const minGapSeconds = 300; // 5 minutes
+  const scheduledAt = await prisma.callAttempt.findMany({
+    where: {
+      scheduledAt: {
+        gte: new Date(startUnix * 1000),
+        lte: new Date(endUnix * 1000),
+      },
+      status: "SCHEDULED",
+    },
+    select: { scheduledAt: true },
+    orderBy: { scheduledAt: "asc" },
+  });
+
+  let nextSlot = startUnix;
+  const scheduledTimes = scheduledAt.map((s) =>
+    Math.floor(s.scheduledAt.getTime() / 1000)
+  );
+
+  for (const time of scheduledTimes) {
+    if (time <= nextSlot && time + minGapSeconds > nextSlot) {
+      nextSlot = time + minGapSeconds;
+    }
+  }
+
+  // Ensure slot is within window
+  if (nextSlot > endUnix) {
+    // Move to next weekday
+    let nextDay = moment.unix(startUnix).tz(tz).add(1, "day");
+    while (nextDay.day() === 0 || nextDay.day() === 6) {
+      nextDay.add(1, "day");
+    }
+    const nextStart = nextDay
+      .hour(START)
+      .minute(0)
+      .second(0)
+      .millisecond(0)
+      .unix();
+    const nextEnd = nextStart + WINDOW_LEN_SECS;
+    // Recursively find slot in next window
+    return findNextSlot(nextStart, nextEnd, tz);
+  }
+
+  return nextSlot;
+}
 
 r.post("/facebook", async (req, res) => {
   try {
@@ -37,7 +85,7 @@ r.post("/facebook", async (req, res) => {
         .json({ ok: false, error: "missing_name_or_phone" });
     }
 
-    const qnow = getQuebecNow(); // Synchronous, uses server time (America/Toronto)
+    const qnow = getQuebecNow();
     const nowUnix = qnow.unixNow;
     const nowLocal = moment.unix(nowUnix).tz(QUEBEC_TZ);
 
@@ -54,22 +102,44 @@ r.post("/facebook", async (req, res) => {
     const tzForLead = pickTz(timezone) || process.env.DEFAULT_TZ || QUEBEC_TZ;
 
     // Determine scheduling time
-    const startUnix = nextInsideWindowUnixQuebec();
     let scheduledUnix;
+    const startUnix = nextInsideWindowUnixQuebec();
+    const endUnix = startUnix + WINDOW_LEN_SECS;
 
     if (forceNow || ignoreWindow) {
-      // Schedule 2 minutes from now
+      // Immediate call: 2 minutes from now
       scheduledUnix = nowUnix + 120;
     } else {
-      // Schedule within Québec window (9 AM to 7 PM EDT by default)
-      const endUnix = startUnix + WINDOW_LEN_SECS;
-      scheduledUnix =
-        nowUnix >= startUnix && nowUnix <= endUnix ? nowUnix + 120 : startUnix;
+      // Schedule within window, with gap
+      const isInsideWindowNow = nowUnix >= startUnix && nowUnix <= endUnix;
+      let targetUnix = isInsideWindowNow ? nowUnix + 120 : startUnix;
+      let targetMoment = moment.unix(targetUnix).tz(tzForLead);
+
+      // Skip weekends
+      while (targetMoment.day() === 0 || targetMoment.day() === 6) {
+        targetMoment
+          .add(1, "day")
+          .hour(START)
+          .minute(0)
+          .second(0)
+          .millisecond(0);
+      }
+      targetUnix = targetMoment.unix();
+      const targetEndUnix = targetMoment
+        .clone()
+        .hour(END)
+        .minute(0)
+        .second(0)
+        .millisecond(0)
+        .unix();
+
+      // Find next available slot with 5-minute gap
+      scheduledUnix = await findNextSlot(targetUnix, targetEndUnix, tzForLead);
     }
 
     const scheduledAt = new Date(scheduledUnix * 1000);
 
-    // Save lead + call attempt in a single transaction
+    // Save lead + call attempt
     const lead = await prisma.lead.create({
       data: {
         fbLeadId: fbLeadId || null,
@@ -89,7 +159,7 @@ r.post("/facebook", async (req, res) => {
       },
     });
 
-    // Respond quickly
+    // Respond
     res.json({
       ok: true,
       leadId: lead.id,
@@ -102,8 +172,8 @@ r.post("/facebook", async (req, res) => {
       window_hours: { start: START, end: END },
     });
 
-    // Run heavy tasks in background
-    (async () => {
+    // Background tasks with 2-minute delay
+    setTimeout(async () => {
       try {
         const tasks = [];
 
@@ -118,7 +188,11 @@ r.post("/facebook", async (req, res) => {
               html,
               text: `Salut 👋\n\nTu viens de remplir notre formulaire 🙌\nBonne nouvelle : finalise ton inscription ici : ${process.env.DASHBOARD_URL}/complete-profile\n\nÀ bientôt !`,
             })
-              .then(() => console.log(`[INTAKE] email sent to ${email}`))
+              .then(() =>
+                console.log(
+                  `[INTAKE] email sent to ${email} after 2-minute delay`
+                )
+              )
               .catch((err) =>
                 console.error("[INTAKE] sendEmail failed:", err.message)
               )
@@ -130,7 +204,9 @@ r.post("/facebook", async (req, res) => {
             to: phone,
             body: `T’as commencé ton inscription, mais ton profil est incomplet. On t’a renvoyé le courriel. Pense à vérifier les spams si jamais.`,
           })
-            .then(() => console.log(`[INTAKE] SMS sent to ${phone}`))
+            .then(() =>
+              console.log(`[INTAKE] SMS sent to ${phone} after 2-minute delay`)
+            )
             .catch((err) =>
               console.error("[INTAKE] sendSMS failed:", err.message)
             )
@@ -160,6 +236,7 @@ r.post("/facebook", async (req, res) => {
               .then(() =>
                 console.log("[INTAKE] immediate call triggered", {
                   leadId: lead.id,
+                  scheduledUnix,
                 })
               )
               .catch((err) =>
@@ -172,7 +249,7 @@ r.post("/facebook", async (req, res) => {
       } catch (err) {
         console.error("[INTAKE background error]", err);
       }
-    })();
+    }, 120000); // 2-minute delay (120 seconds)
   } catch (e) {
     console.error("[INTAKE error]", e);
     return res.status(500).json({ ok: false, error: "intake_failed" });
