@@ -8,11 +8,10 @@ import {
   WINDOW_LEN_SECS,
   nextInsideWindowUnixQuebec,
   pickTz,
-  QUEBEC_TZ,
 } from "../lib/schedule.js";
 import { renderTemplate } from "../helpers/renderTemplates.js";
+import { getQuebecNow, QUEBEC_TZ } from "../lib/quebecTime.js";
 import { sendEmail, sendSMS } from "../helpers/notify.js";
-import { getQuebecNow } from "../lib/quebecTime.js";
 import { callOutbound } from "../lib/elevenlabs.js";
 
 const prisma = new PrismaClient();
