@@ -9,8 +9,8 @@ import {
   nextInsideWindowUnixQuebec,
   pickTz,
 } from "../lib/schedule.js";
-import { getQuebecNowAsync, QUEBEC_TZ } from "../lib/quebecTime.js";
 import { renderTemplate } from "../helpers/renderTemplates.js";
+import { getQuebecNow, QUEBEC_TZ } from "../lib/quebecTime.js";
 import { sendEmail, sendSMS } from "../helpers/notify.js";
 import { callOutbound } from "../lib/elevenlabs.js";
 
@@ -37,8 +37,9 @@ r.post("/facebook", async (req, res) => {
         .json({ ok: false, error: "missing_name_or_phone" });
     }
 
-    const qnow = await getQuebecNowAsync();
+    const qnow = getQuebecNow(); // Synchronous, uses server time (America/Toronto)
     const nowUnix = qnow.unixNow;
+    const nowLocal = moment.unix(nowUnix).tz(QUEBEC_TZ);
 
     // Deduplication
     if (fbLeadId) {
@@ -49,18 +50,21 @@ r.post("/facebook", async (req, res) => {
       }
     }
 
+    // Use Québec time zone unless explicitly overridden and valid
     const tzForLead = pickTz(timezone) || process.env.DEFAULT_TZ || QUEBEC_TZ;
 
-    const startUnix = await nextInsideWindowUnixQuebec();
-    let scheduledUnix = forceNow
-      ? Math.floor(Date.now() / 1000) + 5
-      : startUnix;
+    // Determine scheduling time
+    const startUnix = nextInsideWindowUnixQuebec();
+    let scheduledUnix;
 
-    if (!ignoreWindow) {
+    if (forceNow || ignoreWindow) {
+      // Schedule 2 minutes from now
+      scheduledUnix = nowUnix + 120;
+    } else {
+      // Schedule within Québec window (9 AM to 7 PM EDT by default)
       const endUnix = startUnix + WINDOW_LEN_SECS;
-      if (!(nowUnix >= startUnix && nowUnix <= endUnix)) {
-        scheduledUnix = startUnix;
-      }
+      scheduledUnix =
+        nowUnix >= startUnix && nowUnix <= endUnix ? nowUnix + 120 : startUnix;
     }
 
     const scheduledAt = new Date(scheduledUnix * 1000);
@@ -85,16 +89,20 @@ r.post("/facebook", async (req, res) => {
       },
     });
 
-    // ✅ Respond quickly
+    // Respond quickly
     res.json({
       ok: true,
       leadId: lead.id,
       scheduled_time_unix: scheduledUnix,
+      scheduled_time_local: moment
+        .unix(scheduledUnix)
+        .tz(QUEBEC_TZ)
+        .format("YYYY-MM-DD HH:mm:ss z"),
       window_tz: QUEBEC_TZ,
       window_hours: { start: START, end: END },
     });
 
-    // 🔥 Run heavy tasks in background, in parallel
+    // Run heavy tasks in background
     (async () => {
       try {
         const tasks = [];
@@ -129,7 +137,6 @@ r.post("/facebook", async (req, res) => {
         );
 
         // Outbound call check
-        const nowLocal = moment.unix(nowUnix).tz(QUEBEC_TZ);
         const startLocal = nowLocal.clone().hour(START).minute(0).second(0);
         const endLocal = nowLocal.clone().hour(END).minute(0).second(0);
         const isInsideWindowNow =
@@ -142,7 +149,7 @@ r.post("/facebook", async (req, res) => {
           Boolean(variables?.hangup_on_voicemail) ||
           Boolean(metadata?.hangup_on_voicemail);
 
-        if (!vmFlag && (ignoreWindow || isInsideWindowNow)) {
+        if (!vmFlag && (ignoreWindow || forceNow || isInsideWindowNow)) {
           tasks.push(
             callOutbound({
               to: phone,
@@ -167,7 +174,7 @@ r.post("/facebook", async (req, res) => {
       }
     })();
   } catch (e) {
-    console.error(e);
+    console.error("[INTAKE error]", e);
     return res.status(500).json({ ok: false, error: "intake_failed" });
   }
 });

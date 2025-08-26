@@ -3,9 +3,8 @@ import { Router } from "express";
 import fetch from "node-fetch";
 import crypto from "crypto";
 
-// import { callOutbound } from "../lib/elevenlabs.js"; // no longer used
-import { QUEBEC_TZ, getQuebecNowAsync } from "../lib/quebecTime.js";
-import { nextInsideWindowUnix } from "../lib/schedule.js";
+import { getQuebecNow, QUEBEC_TZ } from "../lib/quebecTime.js";
+import { nextInsideWindowUnixQuebec } from "../lib/schedule.js";
 
 const prisma = new PrismaClient();
 const r = Router();
@@ -37,7 +36,6 @@ function verifyHmac(req) {
   const hex = crypto.createHmac("sha256", secret).update(payload).digest("hex");
 
   try {
-    // compare decoded hex buffers
     return crypto.timingSafeEqual(
       Buffer.from(hex, "hex"),
       Buffer.from(v0, "hex")
@@ -84,7 +82,6 @@ function mapOutcomeFromTranscription(data) {
   return "FAILED";
 }
 
-/** pull structured fields from analysis.data_collection_results */
 function pickDataCollections(d) {
   const r = d?.analysis?.data_collection_results || {};
   const val = (k) => r[k]?.value ?? null;
@@ -97,10 +94,10 @@ function pickDataCollections(d) {
   };
 }
 
-/** ---------- POST to your external backend (3 tries) ---------- */
+/** ---------- POST to external backend (3 tries) ---------- */
 async function postToExternal(payload) {
   const url = process.env.CRM_ENDPOINT;
-  if (!url) return; // silently skip if not configured
+  if (!url) return;
 
   const headers = { "Content-Type": "application/json" };
 
@@ -128,23 +125,27 @@ async function postToExternal(payload) {
   }
 }
 
-/** Schedule for the next day, using your existing call window rules */
+/** Schedule for the next day, 2 minutes after window start */
 function nextDayInsideWindowUnix(tz) {
   const zone = tz || process.env.DEFAULT_TZ || QUEBEC_TZ;
   try {
-    // your nextInsideWindowUnix gives the *next* valid slot today;
-    // adding 24h moves it to the same slot tomorrow.
-    const todayNext = Number(nextInsideWindowUnix(zone));
-    if (Number.isFinite(todayNext)) return todayNext + 24 * 60 * 60; // seconds
+    const todayNext = Number(nextInsideWindowUnixQuebec());
+    if (Number.isFinite(todayNext)) {
+      // Add 24 hours for next day, plus 120 seconds (2 minutes)
+      return todayNext + 24 * 60 * 60 + 120;
+    }
   } catch {}
-  // Fallback: exactly +24h from now (in seconds)
-  return Math.floor(Date.now() / 1000) + 24 * 60 * 60;
+  // Fallback: 9 AM tomorrow + 2 minutes
+  const now = getQuebecNow();
+  const tomorrow = moment.unix(now.unixNow).tz(zone).add(1, "day");
+  const nextDayStart = tomorrow.hour(START).minute(2).second(0).millisecond(0);
+  return nextDayStart.unix();
 }
 
 /** ---------- Route ---------- */
 r.post("/elevenlabs", async (req, res) => {
   try {
-    const qnow = getQuebecNowAsync();
+    const qnow = getQuebecNow();
     console.log(
       "[WEBHOOK] sig:",
       req.headers["elevenlabs-signature"],
@@ -181,8 +182,8 @@ r.post("/elevenlabs", async (req, res) => {
     let outcome = "FAILED";
     let convoId = body.conversation_id || body.id || null;
 
-    let transcriptArr = null; // array from EL
-    let transcriptStr = null; // stringified for DB
+    let transcriptArr = null;
+    let transcriptStr = null;
     let recordingUrl = null;
     let startedAt = null;
     let endedAt = null;
@@ -192,7 +193,6 @@ r.post("/elevenlabs", async (req, res) => {
     let from_number = null;
     let to_number = null;
 
-    // extras for CRM
     let costCents = null;
     let durationSecs = null;
     let summary = null;
@@ -207,7 +207,6 @@ r.post("/elevenlabs", async (req, res) => {
       const m = d.metadata || {};
       const pc = m.phone_call || {};
 
-      // numbers
       from_number =
         pc.external_number ||
         m.from_number ||
@@ -226,12 +225,7 @@ r.post("/elevenlabs", async (req, res) => {
       const sysCalled = dyn.system__called_number || null;
       const sysCaller = dyn.system__caller_id || null;
 
-      // Candidate lead phones: external/caller only (avoid agent lines)
-      const candidateLeadPhones = [
-        from_number, // external/caller
-        sysCaller, // dynamic caller id if external
-        m.caller_number, // extra safety
-      ]
+      const candidateLeadPhones = [from_number, sysCaller, m.caller_number]
         .map(normPhone)
         .filter(Boolean);
 
@@ -241,7 +235,6 @@ r.post("/elevenlabs", async (req, res) => {
       emailFromMeta = m.email || null;
       leadId = Number(dyn.lead_id) || Number(m.lead_id) || null;
 
-      // timing + transcript
       startedAt = m.started_at ? new Date(m.started_at) : null;
       endedAt = m.ended_at ? new Date(m.ended_at) : new Date();
       transcriptArr = Array.isArray(d.transcript) ? d.transcript : null;
@@ -251,14 +244,12 @@ r.post("/elevenlabs", async (req, res) => {
       }
       recordingUrl = d.recording_url || d.audio_url || null;
 
-      // extras for CRM
       costCents = Number(m.cost ?? null);
       durationSecs = Number(m.call_duration_secs ?? null);
       summary = d.analysis?.transcript_summary || null;
       title = d.analysis?.call_summary_title || null;
       termination = m.termination_reason || null;
 
-      // NEW: structured extractions
       const dc = pickDataCollections(d);
       const dataCollectionsRaw = d?.analysis?.data_collection_results || {};
 
@@ -279,7 +270,6 @@ r.post("/elevenlabs", async (req, res) => {
           }
         }
       }
-      // Do NOT match on agent/to number to avoid mis-association
 
       if (!lead && process.env.AUTO_CREATE_LEAD_FROM_WEBHOOK === "1") {
         const tz = process.env.DEFAULT_TZ || QUEBEC_TZ;
@@ -309,7 +299,6 @@ r.post("/elevenlabs", async (req, res) => {
         return res.status(200).json({ ok: true, note: "lead_not_found" });
       }
 
-      // enrich email if provided
       if (emailFromMeta && (!lead.email || lead.email !== emailFromMeta)) {
         await prisma.lead.update({
           where: { id: lead.id },
@@ -317,7 +306,7 @@ r.post("/elevenlabs", async (req, res) => {
         });
       }
 
-      /** ---------- Update attempt & lead (STRINGIFY transcript) ---------- */
+      /** ---------- Update attempt & lead ---------- */
       let attempt = await prisma.callAttempt.findFirst({
         where: { leadId: lead.id },
         orderBy: { createdAt: "desc" },
@@ -358,13 +347,12 @@ r.post("/elevenlabs", async (req, res) => {
         },
       });
 
-      /** ---------- Push to your external backend ---------- */
+      /** ---------- Push to external backend ---------- */
       const crmPayload = {
         leadId: lead.id,
         fullName: lead.fullName,
         phone: lead.phone,
         email: lead.email || emailFromMeta || null,
-
         outcome,
         conversationId: d.conversation_id || convoId || null,
         startedAt: (startedAt || null)?.toISOString?.() || null,
@@ -374,21 +362,18 @@ r.post("/elevenlabs", async (req, res) => {
         terminationReason: termination,
         summary,
         summaryTitle: title,
-
-        // Structured fields + raw collection
         availability: dc.availability,
         job_status: dc.job_status,
         salary_expectations: dc.salary_expectations,
         job_type: dc.job_type,
         job_field: dc.job_field,
-        dataCollectionsRaw, // <---- full raw map
-
+        dataCollectionsRaw,
         transcript: transcriptArr || [],
         raw: body,
       };
       postToExternal(crmPayload).catch(() => {});
 
-      /** ---------- Retry only on FAILED/NO_ANSWER/VOICEMAIL (next day) ---------- */
+      /** ---------- Retry on FAILED/NO_ANSWER/VOICEMAIL ---------- */
       const retryable = ["FAILED", "NO_ANSWER", "VOICEMAIL"];
       if (retryable.includes(outcome) && attemptsCount < 3) {
         const scheduledUnix = nextDayInsideWindowUnix(
@@ -445,8 +430,6 @@ r.post("/elevenlabs", async (req, res) => {
     let lead = null;
     if (leadId) lead = await prisma.lead.findUnique({ where: { id: leadId } });
 
-    // Avoid matching by agent/to number here as well
-
     if (!lead) {
       console.warn("[WEBHOOK] lead not found (flat)", { leadId, to_number });
       return res.status(200).json({ ok: true, note: "lead_not_found" });
@@ -499,7 +482,6 @@ r.post("/elevenlabs", async (req, res) => {
       },
     });
 
-    // Flat payloads don't include data_collection_results; send nulls
     const dc = body?.analysis?.data_collection_results;
 
     function getDC(key) {
@@ -550,9 +532,9 @@ r.post("/elevenlabs", async (req, res) => {
           attemptNumber: attemptsCount + 1,
           status: "SCHEDULED",
           scheduledAt: new Date(scheduledUnix * 1000),
+          metadata: { schedule_reason: outcome, hangup_on_voicemail: true },
         },
       });
-      // No immediate call-out here
     }
 
     console.log("[WEBHOOK] processed (flat):", {
@@ -562,7 +544,7 @@ r.post("/elevenlabs", async (req, res) => {
     });
     return res.json({ ok: true });
   } catch (e) {
-    console.error("Webhook error:", e);
+    console.error("[WEBHOOK error]", e);
     return res.status(200).json({ ok: true, note: "error_swallowed_for_el" });
   }
 });
