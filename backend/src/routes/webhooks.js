@@ -3,8 +3,10 @@ import { Router } from "express";
 import fetch from "node-fetch";
 import crypto from "crypto";
 
-import { getQuebecNow, QUEBEC_TZ } from "../lib/quebecTime.js";
+// ⬅️ add this near the top
+import { handleAttemptNotifications } from "../lib/notifications.js";
 import { nextInsideWindowUnixQuebec } from "../lib/schedule.js";
+import { getQuebecNow, QUEBEC_TZ } from "../lib/quebecTime.js";
 
 const prisma = new PrismaClient();
 const r = Router();
@@ -346,7 +348,11 @@ r.post("/elevenlabs", async (req, res) => {
           attempts: attemptsCount,
         },
       });
-
+      await handleAttemptNotifications({
+        lead, // the lead object you already have
+        attemptNumber: attemptsCount, // current attempt number
+        outcome, // "NO_ANSWER"
+      });
       /** ---------- Push to external backend ---------- */
       const crmPayload = {
         leadId: lead.id,

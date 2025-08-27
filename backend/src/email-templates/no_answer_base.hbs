@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{#if title}}{{title}}{{/if}}</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #eaebed;
+      font-family: 'Inter', Arial, sans-serif;
+      color: #1e1e1e;
+    }
+
+    .email-container {
+      max-width: 600px;
+      margin: 30px auto;
+      background: #ffffff;
+      border-radius: 15px;
+      overflow: hidden;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.08);
+    }
+
+    .header {
+      background: linear-gradient(135deg, #FF9F00 0%, #E45F00 100%);
+      text-align: center;
+      padding: 20px 0;
+    }
+
+    .header-title {
+      font-size: 22px;
+      font-weight: 800;
+      color: #ffffff;
+      margin-bottom: 8px;
+    }
+
+    .header-subtitle {
+      font-size: 16px;
+      color: #ffe8d2;
+    }
+
+    .content {
+      padding: 30px 20px;
+    }
+
+    .content p {
+      font-size: 16px;
+      line-height: 1.6;
+      margin-bottom: 15px;
+    }
+
+    .cta-button {
+      display: inline-block;
+      background: linear-gradient(135deg, #FF9F00 0%, #E45F00 100%);
+      padding: 12px 30px;
+      color: white !important;
+      font-size: 16px;
+      font-weight: 700;
+      border-radius: 30px;
+      text-decoration: none;
+      box-shadow: 0 5px 18px rgba(228, 95, 0, 0.4);
+      transition: transform 0.3s ease;
+      margin-top: 20px;
+    }
+
+    .cta-button:hover {
+      transform: translateY(-2px);
+    }
+
+    .signature {
+      margin-top: 40px;
+      padding-top: 20px;
+      border-top: 1px solid #eaeaea;
+      font-size: 14px;
+      color: #888888;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="email-container">
+    <!-- Header -->
+    {{#if title}}
+    <div class="header">
+      <div class="header-title">{{title}}</div>
+      {{#if subtitle}}
+        <div class="header-subtitle">{{subtitle}}</div>
+      {{/if}}
+    </div>
+    {{/if}}
+
+    <!-- Body -->
+    <div class="content">
+      {{#if lead.fullName}}
+        <p>Salut {{lead.fullName}} 👋</p>
+      {{/if}}
+
+      {{#if bodyText}}
+        {{{bodyText}}}
+      {{/if}}
+
+      {{#if cta_link}}
+        <a href="{{cta_link}}" class="cta-button">{{cta_text}}</a>
+      {{/if}}
+
+      {{#if closingText}}
+        <p style="margin-top:20px;">{{closingText}}</p>
+      {{/if}}
+
+      {{#if appName}}
+        <div class="signature">
+          L’équipe {{appName}}
+        </div>
+      {{/if}}
+    </div>
+  </div>
+</body>
+</html>
