@@ -129,19 +129,14 @@ async function postToExternal(payload) {
 
 /** Schedule for the next day, 2 minutes after window start */
 function nextDayInsideWindowUnix(tz) {
-  const zone = tz || process.env.DEFAULT_TZ || QUEBEC_TZ;
   try {
     const todayNext = Number(nextInsideWindowUnixQuebec());
     if (Number.isFinite(todayNext)) {
-      // Add 24 hours for next day, plus 120 seconds (2 minutes)
-      return todayNext + 24 * 60 * 60 + 120;
+      return todayNext + 24 * 60 * 60 + 120; // +1 day + 2 min
     }
   } catch {}
-  // Fallback: 9 AM tomorrow + 2 minutes
-  const now = getQuebecNow();
-  const tomorrow = moment.unix(now.unixNow).tz(zone).add(1, "day");
-  const nextDayStart = tomorrow.hour(START).minute(2).second(0).millisecond(0);
-  return nextDayStart.unix();
+  const now = Math.floor(Date.now() / 1000);
+  return now + 24 * 60 * 60 + 120; // fallback if schedule helper fails
 }
 
 /** ---------- Route ---------- */
@@ -348,11 +343,19 @@ r.post("/elevenlabs", async (req, res) => {
           attempts: attemptsCount,
         },
       });
-      await handleAttemptNotifications({
-        lead, // the lead object you already have
-        attemptNumber: attemptsCount, // current attempt number
-        outcome, // "NO_ANSWER"
-      });
+      // 🔔 Trigger attempt notifications (structured branch)
+      try {
+        if (outcome === "NO_ANSWER") {
+          await handleAttemptNotifications({
+            lead,
+            attemptNumber: attemptsCount,
+            outcome,
+          });
+        }
+      } catch (e) {
+        console.warn("[NOTIFY] attempt notifications failed", e?.message);
+      }
+
       /** ---------- Push to external backend ---------- */
       const crmPayload = {
         leadId: lead.id,
@@ -476,6 +479,7 @@ r.post("/elevenlabs", async (req, res) => {
         payload: body,
       },
     });
+    // 🔔 Trigger attempt notifications (flat branch)
 
     const attemptsCount = (lead.attempts || 0) + 1;
     await prisma.lead.update({
@@ -487,7 +491,17 @@ r.post("/elevenlabs", async (req, res) => {
         attempts: attemptsCount,
       },
     });
-
+    try {
+      if (outcome === "NO_ANSWER") {
+        await handleAttemptNotifications({
+          lead,
+          attemptNumber: attemptsCount,
+          outcome,
+        });
+      }
+    } catch (e) {
+      console.warn("[NOTIFY] attempt notifications failed (flat)", e?.message);
+    }
     const dc = body?.analysis?.data_collection_results;
 
     function getDC(key) {
