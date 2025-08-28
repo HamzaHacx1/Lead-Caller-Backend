@@ -48,6 +48,9 @@ async function detectAndRescheduleAnomalies() {
     const currentWindowEnd = moment().tz(tz).hour(19).minute(0).second(0);
     if (now.isBetween(currentWindowStart, currentWindowEnd)) {
       nextScheduledUnix = now.unix() + 120 + index * 300; // 2 min + 5 min stagger
+      if (moment.unix(nextScheduledUnix).tz(tz).isAfter(currentWindowEnd)) {
+        nextScheduledUnix = currentWindowStart.unix() + index * 300; // Reset to start of window
+      }
       console.log(
         `Within window, adjusted to: ${moment
           .unix(nextScheduledUnix)
@@ -63,7 +66,8 @@ async function detectAndRescheduleAnomalies() {
       `After findNextSlot for lead ${lead.id}: ${moment
         .unix(scheduledUnix)
         .tz(tz)
-        .format("YYYY-MM-DD HH:mm:ss z")}`
+        .format("YYYY-MM-DD HH:mm:ss z")}, existing slots:`,
+      await prisma.callAttempt.findMany({ where: { status: "SCHEDULED" } })
     );
 
     // Fallback overlap check
@@ -138,7 +142,7 @@ async function detectAndRescheduleAnomalies() {
             where: { id: lead.id },
             data: {
               status: "SCHEDULED",
-              attempts: { increment: 1 },
+              attempts: attempt.attemptNumber, // Sync with attemptNumber
               nextScheduledAt: scheduledAt,
             },
           });
