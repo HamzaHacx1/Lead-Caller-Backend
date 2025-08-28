@@ -128,7 +128,7 @@ async function postToExternal(payload) {
 }
 
 /** Schedule for the next day, 2 minutes after window start */
-function nextDayInsideWindowUnix(tz) {
+export function nextDayInsideWindowUnix(tz) {
   try {
     const todayNext = Number(nextInsideWindowUnixQuebec());
     if (Number.isFinite(todayNext)) {

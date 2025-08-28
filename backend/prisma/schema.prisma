@@ -53,26 +53,28 @@ model Agent {
 }
 
 model Lead {
-  id            Int             @id @default(autoincrement())
-  fbLeadId      String?         @unique
-  fullName      String
-  email         String?
-  phone         String
-  timezone      String
-  source        String          @default("facebook_lead_ads")
-  status        LeadStatus      @default(NEW)
-  attempts      Int             @default(0)
-  lastOutcome   AttemptOutcome?
-  lastAttemptAt DateTime?
-  createdUserId Int?
-  metadata      Json?
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
-
-  callAttempts  CallAttempt[]
-  conversations Conversation[]
+  id              Int             @id @default(autoincrement())
+  fbLeadId        String?         @unique
+  fullName        String
+  email           String?
+  phone           String
+  timezone        String
+  source          String          @default("facebook_lead_ads")
+  status          LeadStatus      @default(NEW)
+  attempts        Int             @default(0)
+  maxAttempts     Int             @default(3) // Add this line
+  lastOutcome     AttemptOutcome?
+  lastAttemptAt   DateTime?
+  nextScheduledAt DateTime?       // From previous fix
+  lastProcessedAt DateTime?       // Optional
+  createdUserId   Int?
+  metadata        Json?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  callAttempts    CallAttempt[]
+  conversations   Conversation[]
+  @@index([status, nextScheduledAt])
 }
-
 model CallAttempt {
   id             Int            @id @default(autoincrement())
   leadId         Int

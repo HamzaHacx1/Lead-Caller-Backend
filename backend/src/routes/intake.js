@@ -18,7 +18,7 @@ const prisma = new PrismaClient();
 const r = Router();
 
 /** Find next available slot with a 5-minute gap */
-async function findNextSlot(startUnix, endUnix, tz) {
+export async function findNextSlot(startUnix, endUnix, tz) {
   const minGapSeconds = 300; // 5 minutes
   const scheduledAt = await prisma.callAttempt.findMany({
     where: {
