@@ -3,6 +3,7 @@ import React from "react";
 
 import { isAuthed, setToken } from "./lib/auth";
 import Dashboard from "./pages/Dashboard";
+import LeadForm from "./pages/LeadForm";
 import Attempts from "./pages/Attempts";
 import Login from "./pages/Login";
 import Leads from "./pages/Leads";
@@ -12,7 +13,8 @@ const tabs = [
   { key: "dashboard", label: "Dashboard", component: Dashboard },
   { key: "leads", label: "Leads", component: Leads },
   { key: "attempts", label: "Attempts", component: Attempts },
-  { key: "sms", label: "SMS", component: Sms }, // 👈 NEW
+  { key: "sms", label: "SMS", component: Sms },
+  { key: "form", label: "Lead Form", component: LeadForm }, // New tab for the form
 ];
 
 export default function App() {
