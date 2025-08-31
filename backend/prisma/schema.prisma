@@ -89,6 +89,7 @@ model CallAttempt {
   scheduledAt    DateTime
   startedAt      DateTime?
   endedAt        DateTime?
+  conversationId        String?
   // External provider conversation id (NOT a relation)
   conversationExternalId String? 
   recordingUrl   String?
