@@ -46,7 +46,7 @@ model Agent {
   id            Int      @id @default(autoincrement())
   name          String
   elevenAgentId String   @unique
-  phoneNumberId String   @unique
+  phoneNumberId String  
   active        Boolean  @default(true)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -90,7 +90,7 @@ model CallAttempt {
   startedAt      DateTime?
   endedAt        DateTime?
   // External provider conversation id (NOT a relation)
-  conversationExternalId String? @unique
+  conversationExternalId String? 
   recordingUrl   String?
   transcript     String?
   payload        Json?
