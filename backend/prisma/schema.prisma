@@ -46,7 +46,7 @@ model Agent {
   id            Int      @id @default(autoincrement())
   name          String
   elevenAgentId String   @unique
-  phoneNumberId String
+  phoneNumberId String   @unique
   active        Boolean  @default(true)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -62,19 +62,25 @@ model Lead {
   source          String          @default("facebook_lead_ads")
   status          LeadStatus      @default(NEW)
   attempts        Int             @default(0)
-  maxAttempts     Int             @default(3) // Add this line
+  maxAttempts     Int             @default(3)
   lastOutcome     AttemptOutcome?
   lastAttemptAt   DateTime?
-  nextScheduledAt DateTime?       // From previous fix
-  lastProcessedAt DateTime?       // Optional
+  nextScheduledAt DateTime?
+  lastProcessedAt DateTime?
   createdUserId   Int?
   metadata        Json?
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
+
+  // Relations
   callAttempts    CallAttempt[]
   conversations   Conversation[]
+  notificationEvents NotificationEvent[]
+
   @@index([status, nextScheduledAt])
+  @@index([createdAt])
 }
+
 model CallAttempt {
   id             Int            @id @default(autoincrement())
   leadId         Int
@@ -83,20 +89,21 @@ model CallAttempt {
   scheduledAt    DateTime
   startedAt      DateTime?
   endedAt        DateTime?
-  // External provider conversation id (keep as-is; not the relation)
-  conversationId String?        @unique
+  // External provider conversation id (NOT a relation)
+  conversationExternalId String? @unique
   recordingUrl   String?
   transcript     String?
   payload        Json?
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 
-  Lead Lead @relation(fields: [leadId], references: [id])
-
+  // Relations
+  lead          Lead        @relation(fields: [leadId], references: [id], onDelete: Cascade)
   // Back-relation for the 1:1 link from Conversation.callAttemptId
-  Conversation Conversation? @relation("CallAttemptToConversation")
+  conversation  Conversation? @relation("CallAttemptToConversation")
 
   @@index([leadId])
+  @@index([scheduledAt])
 }
 
 model User {
@@ -111,19 +118,20 @@ model User {
 
 // --------------------------- SMS Inbox -----------------------------
 model Conversation {
-  id           Int      @id @default(autoincrement())
-  leadId       Int
-  twilioNumber String
-  isOpen       Boolean  @default(true)
-  lastMsgAt    DateTime @default(now())
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id            Int       @id @default(autoincrement())
+  leadId        Int
+  twilioNumber  String
+  isOpen        Boolean   @default(true)
+  lastMsgAt     DateTime  @default(now())
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   // Optional 1:1 link to the call attempt that spawned this thread
-  callAttemptId Int?         @unique
-  CallAttempt   CallAttempt? @relation("CallAttemptToConversation", fields: [callAttemptId], references: [id])
+  callAttemptId Int?      @unique
+  callAttempt   CallAttempt? @relation("CallAttemptToConversation", fields: [callAttemptId], references: [id], onDelete: SetNull)
 
-  Lead     Lead      @relation(fields: [leadId], references: [id])
+  // Relations
+  lead     Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
   messages Message[]
 
   @@index([leadId, twilioNumber])
@@ -140,12 +148,28 @@ model Message {
   providerSid        String?          @unique       // Twilio SMxxxxxxxx
   createdAt          DateTime         @default(now())
 
-  // NEW: read receipts + MMS support
+  // Read receipts + MMS support
   readAt             DateTime?
   mediaUrls          String[]         @default([])
   mediaContentTypes  String[]         @default([])
 
-  Conversation       Conversation     @relation(fields: [conversationId], references: [id])
+  // Relations
+  conversation       Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   @@index([conversationId, id])
+  @@index([createdAt])
+}
+
+model NotificationEvent {
+  id          Int      @id @default(autoincrement())
+  leadId      Int
+  step        String
+  createdAt   DateTime @default(now())
+  scheduledAt DateTime?
+  metadata    Json?
+
+  // Relations
+  lead        Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId, createdAt])
 }
