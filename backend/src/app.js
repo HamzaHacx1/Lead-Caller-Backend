@@ -8,6 +8,7 @@ import dotenv from "dotenv";
 import http from "http";
 import cors from "cors";
 
+import testApi from "./tests/notifications.js";
 import webhooks from "./routes/webhooks.js";
 import metrics from "./routes/metrics.js";
 import authRoutes from "./routes/auth.js";
@@ -83,7 +84,7 @@ app.use("/webhooks", webhooks);
 app.use("/metrics", metrics);
 app.use("/auth", authRoutes);
 app.use("/sms", sms);
-
+app.use("/test-api", testApi);
 // --- HTTP + Socket.IO ---
 const server = http.createServer(app);
 const io = new SocketIOServer(server, {
