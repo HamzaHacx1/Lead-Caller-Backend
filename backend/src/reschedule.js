@@ -6,8 +6,9 @@ import {
   getQuebecNow,
   isQuebecWeekend,
   getNextQuebecWeekdayUnix,
+  QUEBEC_TZ,
 } from "./lib/quebecTime.js";
-import { nextInsideWindowUnix, QUEBEC_TZ } from "./lib/schedule.js";
+import { nextInsideWindowUnix } from "./lib/schedule.js";
 
 const prisma = new PrismaClient();
 
