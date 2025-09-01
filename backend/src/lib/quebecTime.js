@@ -12,7 +12,7 @@ export function getQuebecNow() {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
-    minute: "2-digit",
+    minute: "2-digit", // Fixed typo from minuteWare
     second: "2-digit",
     hour12: false,
     timeZoneName: "short",
@@ -27,7 +27,7 @@ export function getQuebecNow() {
     month: Number(parts.month),
     day: Number(parts.day),
     hour: Number(parts.hour),
-    minute: Number(parts.minuteWare),
+    minute: Number(parts.minute),
     second: Number(parts.second),
     abbr: parts.timeZoneName,
     label,
@@ -41,6 +41,14 @@ export function getQuebecNow() {
 export function isInsideQuebecWindow(startHour, endHour) {
   const { hour } = getQuebecNow();
   return hour >= startHour && hour < endHour;
+}
+
+/**
+ * True if the current day is a weekend (Saturday or Sunday) in Québec time.
+ */
+export function isQuebecWeekend() {
+  const { day } = getQuebecNow();
+  return day === 0 || day === 6; // 0 = Sunday, 6 = Saturday
 }
 
 /**
@@ -59,4 +67,19 @@ export function formatInQuebec(date = new Date()) {
     timeZoneName: "short",
   });
   return fmt.format(date);
+}
+
+/**
+ * Get the next weekday Unix timestamp within the Québec window.
+ * Skips weekends and respects the 9 AM–7 PM window.
+ */
+export function getNextQuebecWeekdayUnix() {
+  let now = moment().tz(QUEBEC_TZ);
+  let when = now.clone();
+  while (when.day() === 0 || when.day() === 6) {
+    when.add(1, "day").hour(START).minute(0).second(0).millisecond(0);
+  }
+  const start = when.clone().hour(START).minute(0).second(0).millisecond(0);
+  const end = when.clone().hour(END).minute(0).second(0).millisecond(0);
+  return now.isSameOrBefore(end) ? now.add(2, "minutes").unix() : start.unix();
 }

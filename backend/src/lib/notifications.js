@@ -1,37 +1,60 @@
 import { PrismaClient } from "@prisma/client";
+import sanitizeHtml from "sanitize-html"; // Add for input sanitization
+import moment from "moment-timezone";
 
+import { getQuebecNow, isQuebecWeekend, QUEBEC_TZ } from "../lib/quebecTime.js";
 import { renderTemplate as renderHbsFile } from "../helpers/renderTemplates.js";
 import { sendEmail, sendSMS } from "../helpers/notify.js";
+import { nextInsideWindowUnix } from "../lib/schedule.js";
+
+// Add for input sanitization
 
 const prisma = new PrismaClient();
 const { BOOKING_URL, SUPPORT_NUMBER, APP_NAME = "EmploiRapide" } = process.env;
 
-/** Ensure we don't double-send the same step for the same lead */
+/** Ensure we don't double-send the same step for the same lead with transaction safety */
 async function ensureOnce(leadId, step) {
   try {
-    await prisma.notificationEvent.create({ data: { leadId, step } });
+    await prisma.$transaction(async (tx) => {
+      const existing = await tx.notificationEvent.findFirst({
+        where: { leadId, step },
+      });
+      if (existing) throw new Error("Notification already scheduled");
+      await tx.notificationEvent.create({ data: { leadId, step } });
+    });
     return true;
-  } catch {
+  } catch (e) {
+    console.warn(
+      `[NOTIFY] ensureOnce failed for ${leadId}/${step}: ${e.message}`
+    );
     return false;
   }
 }
 
+/** Validate and sanitize email */
 function hasEmail(lead) {
-  return !!lead?.email && /\S+@\S+\.\S+/.test(String(lead.email).trim());
-}
-function hasPhone(lead) {
-  return !!lead?.phone && String(lead.phone).trim().length >= 6;
+  const email = lead?.email ? String(lead.email).trim() : "";
+  const emailRegex = /\S+@\S+\.\S+/;
+  return email && emailRegex.test(email) && !email.includes(";"); // Prevent SQL-like injection
 }
 
-/** Per-attempt copy config (subject/title/subtitle/cta/body/closing/sms) */
+/** Validate and sanitize phone */
+function hasPhone(lead) {
+  const phone = lead?.phone ? String(lead.phone).trim() : "";
+  return phone.length >= 6 && !phone.includes(";"); // Prevent SQL-like injection
+}
+
+/** Per-attempt copy config with sanitized content */
 function getAttemptCopy(step, isAnswered = false) {
+  const sanitize = (text) =>
+    sanitizeHtml(text, { allowedTags: [], allowedAttributes: {} }); // Strip all HTML
   if (isAnswered) {
     if (step === "ANSWERED_24H") {
       return {
-        subject: "T’as ton CV à portée de main ?",
-        title: "On t’attend encore",
-        cta_text: "👉 Compléter mon dossier",
-        bodyText: `
+        subject: sanitize("T’as ton CV à portée de main ?"),
+        title: sanitize("On t’attend encore"),
+        cta_text: sanitize("👉 Compléter mon dossier"),
+        bodyText: sanitize(`
           <p>On a vu que t’as commencé ton inscription…</br>
           Mais ton profil est encore bloqué à l’étape 1 😬</br>
           Il te reste à :</br>
@@ -39,72 +62,84 @@ function getAttemptCopy(step, isAnswered = false) {
             <li>✅ Ajouter ton CV</li>
             <li>✅ Joindre un spécimen de chèque</li>
           </ul></p>
-        `,
-        closingText:
-          "Pas de stress. Juste une p’tite étape de plus, et tu pourras recevoir des offres. On garde ta place au chaud 🔥",
+        `),
+        closingText: sanitize(
+          "Pas de stress. Juste une p’tite étape de plus, et tu pourras recevoir des offres. On garde ta place au chaud 🔥"
+        ),
         smsBody: (ctx) =>
-          `T’as commencé ton inscription, mais ton profil est incomplet. On t’a renvoyé le courriel. Pense à vérifier les spams si jamais.`,
+          sanitize(
+            `T’as commencé ton inscription, mais ton profil est incomplet. On t’a renvoyé le courriel. Pense à vérifier les spams si jamais.`
+          ),
       };
     }
     if (step === "ANSWERED_48H") {
       return {
-        subject: "On peut pas t’aider tant que ton profil est en pause",
-        title: "Dernier rappel !",
-        cta_text: "👉 Compléter mon dossier",
-        bodyText: `
+        subject: sanitize(
+          "On peut pas t’aider tant que ton profil est en pause"
+        ),
+        title: sanitize("Dernier rappel !"),
+        cta_text: sanitize("👉 Compléter mon dossier"),
+        bodyText: sanitize(`
           <p>Ton inscription est bien commencée… mais sans CV ni spécimen de chèque, on ne peut pas avancer.
           C’est comme vouloir passer une entrevue sans se présenter 😅</p>
           <p>Sinon, ton compte va rester en veille. Tu pourras toujours revenir plus tard, mais tu vas manquer des opportunités maintenant.</p>
-        `,
-        closingText: "On est prêts quand toi tu l’es 💼",
+        `),
+        closingText: sanitize("On est prêts quand toi tu l’es 💼"),
         smsBody: (ctx) =>
-          `Dernier rappel : on t’a écrit pour finaliser ton profil. Jette un œil dans ta boîte courriel (et dans les indésirables aussi!).`,
+          sanitize(
+            `Dernier rappel : on t’a écrit pour finaliser ton profil. Jette un œil dans ta boîte courriel (et dans les indésirables aussi!).`
+          ),
       };
     }
   }
 
   // NO_ANSWER logic
   const defaultCopy = {
-    subject: "J’ai tenté de t’appeler pour ta job 🚀",
-    title: "J’ai tenté de t’appeler pour ta job 🚀",
-    cta_text: "➡️ Compléter mon inscription",
-    bodyText: `
+    subject: sanitize("J’ai tenté de t’appeler pour ta job 🚀"),
+    title: sanitize("J’ai tenté de t’appeler pour ta job 🚀"),
+    cta_text: sanitize("➡️ Compléter mon inscription"),
+    bodyText: sanitize(`
       <p>Salut,</p>
       <p><strong>J’ai essayé de t’appeler aujourd’hui</strong> pour avancer dans ta recherche d’emploi, mais je n’ai pas réussi à te joindre.</p>
       <p>Pas de souci — tu peux compléter ton inscription en ligne (3 minutes) :</p>
-    `,
-    closingText: "À bientôt !",
+    `),
+    closingText: sanitize("À bientôt !"),
     smsBody: (ctx) =>
-      `Simon d’${APP_NAME} — J’ai tenté de t’appeler pour ta recherche d’emploi. Rappelle-moi !`,
+      sanitize(
+        `Simon d’${APP_NAME} — J’ai tenté de t’appeler pour ta recherche d’emploi. Rappelle-moi !`
+      ),
   };
 
   if (step === "AFTER_2_NO_ANSWER") {
     return {
-      subject: "Toujours pas eu de nouvelles 📞",
-      title: "Toujours pas eu de nouvelles 📞",
-      cta_text: "Compléter mon inscription",
-      bodyText: `
+      subject: sanitize("Toujours pas eu de nouvelles 📞"),
+      title: sanitize("Toujours pas eu de nouvelles 📞"),
+      cta_text: sanitize("Compléter mon inscription"),
+      bodyText: sanitize(`
         <p>Tu peux gagner du temps en complétant ton inscription directement ici :</p>
-      `,
-      closingText:
-        "On pourra ainsi te proposer des postes plus rapidement. À très vite !",
+      `),
+      closingText: sanitize(
+        "On pourra ainsi te proposer des postes plus rapidement. À très vite !"
+      ),
       smsBody: (ctx) =>
-        `Simon d’${APP_NAME} ici — je n’ai toujours pas eu ton appel. Peux-tu me rappeler ? 📞`,
+        sanitize(
+          `Simon d’${APP_NAME} ici — je n’ai toujours pas eu ton appel. Peux-tu me rappeler ? 📞`
+        ),
     };
   }
 
   if (step === "AFTER_3_NO_ANSWER") {
     return {
-      subject: "Dernier suivi — on met en pause si pas de nouvelles",
-      title: "Dernière tentative",
-      subtitle: "On aimerait vraiment t’aider 🚀",
-      cta_text: "➡️ DÉMARRER MA CANDIDATURE",
-      bodyText: `
+      subject: sanitize("Dernier suivi — on met en pause si pas de nouvelles"),
+      title: sanitize("Dernière tentative"),
+      subtitle: sanitize("On aimerait vraiment t’aider 🚀"),
+      cta_text: sanitize("➡️ DÉMARRER MA CANDIDATURE"),
+      bodyText: sanitize(`
         <p>C’est la 3<sup>e</sup> fois qu’on essaye de t’appeler sans succès.</p>
         <p>Si tu veux toujours un job rapidement, il te suffit de compléter ton profil :</p>
-      `,
-      closingText: "Merci et à bientôt !",
-      smsBody: (ctx) => `As-tu toujours besoin d’un emploi ?`,
+      `),
+      closingText: sanitize("Merci et à bientôt !"),
+      smsBody: (ctx) => sanitize(`As-tu toujours besoin d’un emploi ?`),
     };
   }
 
@@ -151,21 +186,30 @@ async function sendEmailAndSMS({ lead, subject, context, smsBody, skipEmail }) {
   }
 }
 
-/** Schedule delayed notifications */
+/** Schedule delayed notifications within business hours */
 async function scheduleDelayedNotifications(lead, attemptNumber) {
-  const now = new Date();
+  const tz = lead.timezone || QUEBEC_TZ;
+  const now = moment().tz(tz);
   const delays = [
     { step: "ANSWERED_24H", delay: 24 * 60 * 60 * 1000, attempt: 1 }, // 24h
     { step: "ANSWERED_48H", delay: 48 * 60 * 60 * 1000, attempt: 1 }, // 48h
   ];
 
   for (const { step, delay, attempt } of delays) {
-    const scheduledAt = new Date(now.getTime() + delay);
+    let scheduledAt = moment(now).add(delay, "milliseconds");
+    // Adjust to next business window (9 AM–7 PM, skipping weekends)
+    while (
+      scheduledAt.day() === 0 ||
+      scheduledAt.day() === 6 ||
+      !isInsideQuebecWindow(9, 19)
+    ) {
+      scheduledAt.add(1, "day").hour(9).minute(0).second(0).millisecond(0);
+    }
     await prisma.notificationEvent.create({
       data: {
         leadId: lead.id,
         step,
-        scheduledAt,
+        scheduledAt: scheduledAt.toDate(),
         metadata: { attemptNumber: attempt },
       },
     });
@@ -203,9 +247,15 @@ export async function handleAttemptNotifications({
 }) {
   if (!lead?.id) return;
 
+  // Validate outcome
+  const validOutcomes = ["ANSWERED", "NO_ANSWER"];
+  if (!validOutcomes.includes(outcome)) {
+    console.warn(`[NOTIFY] Invalid outcome ${outcome} for lead ${lead.id}`);
+    return;
+  }
+
   // Handle ANSWERED outcome
   if (outcome === "ANSWERED") {
-    // Schedule 24h and 48h notifications
     await scheduleDelayedNotifications(lead, attemptNumber);
     return;
   }
@@ -253,6 +303,12 @@ export async function processScheduledNotifications() {
       notification.step,
       attemptNumber
     );
-    await prisma.notificationEvent.delete({ where: { id: notification.id } });
+    await prisma.notificationEvent
+      .delete({ where: { id: notification.id } })
+      .catch((e) => {
+        console.warn(
+          `[NOTIFY] Failed to delete notification ${notification.id}: ${e.message}`
+        );
+      });
   }
 }

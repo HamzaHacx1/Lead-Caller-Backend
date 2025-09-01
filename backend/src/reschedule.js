@@ -2,7 +2,12 @@ import { PrismaClient } from "@prisma/client";
 import moment from "moment-timezone";
 import cron from "node-cron";
 
-import { QUEBEC_TZ, nextInsideWindowUnix } from "./lib/schedule.js";
+import {
+  getQuebecNow,
+  isQuebecWeekend,
+  getNextQuebecWeekdayUnix,
+} from "./lib/quebecTime.js";
+import { nextInsideWindowUnix, QUEBEC_TZ } from "./lib/schedule.js";
 
 const prisma = new PrismaClient();
 

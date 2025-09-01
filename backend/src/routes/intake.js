@@ -7,6 +7,7 @@ import {
   END,
   WINDOW_LEN_SECS,
   nextInsideWindowUnixQuebec,
+  nextInsideWindowUnix,
   pickTz,
 } from "../lib/schedule.js";
 import { renderTemplate } from "../helpers/renderTemplates.js";
@@ -43,27 +44,20 @@ export async function findNextSlot(startUnix, endUnix, tz) {
     }
   }
 
-  // Ensure slot is within window
-  if (nextSlot > endUnix) {
-    // Move to next weekday
-    let nextDay = moment.unix(startUnix).tz(tz).add(1, "day");
+  // Ensure slot is within window and not on weekend
+  const slotMoment = moment.unix(nextSlot).tz(tz);
+  if (nextSlot > endUnix || slotMoment.hour() < 9 || slotMoment.hour() >= 19) {
+    let nextDay = slotMoment.clone().add(1, "day");
     while (nextDay.day() === 0 || nextDay.day() === 6) {
       nextDay.add(1, "day");
     }
-    const nextStart = nextDay
-      .hour(START)
-      .minute(0)
-      .second(0)
-      .millisecond(0)
-      .unix();
-    const nextEnd = nextStart + WINDOW_LEN_SECS;
-    // Recursively find slot in next window
-    return findNextSlot(nextStart, nextEnd, tz);
+    const nextStart = nextDay.hour(9).minute(0).second(0).millisecond(0).unix();
+    const nextEnd = nextStart + (19 - 9) * 3600; // 10 hours in seconds
+    return findNextSlot(nextStart, nextEnd, tz); // Recurse with new window
   }
 
   return nextSlot;
 }
-
 r.post("/facebook", async (req, res) => {
   try {
     const {
@@ -78,10 +72,30 @@ r.post("/facebook", async (req, res) => {
       ignoreWindow = false,
     } = req.body || {};
 
+    // Input validation
     if (!full_name || !phone) {
       return res
         .status(400)
         .json({ ok: false, error: "missing_name_or_phone" });
+    }
+    const sanitizedName = sanitizeHtml(full_name, {
+      allowedTags: [],
+      allowedAttributes: {},
+    });
+    const sanitizedPhone = sanitizeHtml(phone, {
+      allowedTags: [],
+      allowedAttributes: {},
+    }).replace(/[^\d+]/g, "");
+    const sanitizedEmail = email
+      ? sanitizeHtml(email, { allowedTags: [], allowedAttributes: {} })
+      : null;
+    if (
+      sanitizedPhone.length < 10 ||
+      (sanitizedEmail && !/\S+@\S+\.\S+/.test(sanitizedEmail))
+    ) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "invalid_phone_or_email" });
     }
 
     const qnow = getQuebecNow();
@@ -97,43 +111,21 @@ r.post("/facebook", async (req, res) => {
       }
     }
 
-    // Use Québec time zone unless explicitly overridden and valid
+    // Use lead's timezone or QUEBEC_TZ
     const tzForLead = pickTz(timezone) || process.env.DEFAULT_TZ || QUEBEC_TZ;
 
     // Determine scheduling time
     let scheduledUnix;
-    const startUnix = nextInsideWindowUnixQuebec();
-    const endUnix = startUnix + WINDOW_LEN_SECS;
-
     if (forceNow || ignoreWindow) {
       // Immediate call: 2 minutes from now
       scheduledUnix = nowUnix + 120;
     } else {
-      // Schedule within window, with gap
+      // Schedule within window, respecting lead's timezone
+      const startUnix = await nextInsideWindowUnix(tzForLead);
+      const endUnix = startUnix + WINDOW_LEN_SECS;
       const isInsideWindowNow = nowUnix >= startUnix && nowUnix <= endUnix;
       let targetUnix = isInsideWindowNow ? nowUnix + 120 : startUnix;
-      let targetMoment = moment.unix(targetUnix).tz(tzForLead);
-
-      // Skip weekends
-      while (targetMoment.day() === 0 || targetMoment.day() === 6) {
-        targetMoment
-          .add(1, "day")
-          .hour(START)
-          .minute(0)
-          .second(0)
-          .millisecond(0);
-      }
-      targetUnix = targetMoment.unix();
-      const targetEndUnix = targetMoment
-        .clone()
-        .hour(END)
-        .minute(0)
-        .second(0)
-        .millisecond(0)
-        .unix();
-
-      // Find next available slot with 5-minute gap
-      scheduledUnix = await findNextSlot(targetUnix, targetEndUnix, tzForLead);
+      scheduledUnix = await findNextSlot(targetUnix, endUnix, tzForLead);
     }
 
     const scheduledAt = new Date(scheduledUnix * 1000);
@@ -142,9 +134,9 @@ r.post("/facebook", async (req, res) => {
     const lead = await prisma.lead.create({
       data: {
         fbLeadId: fbLeadId || null,
-        fullName: full_name,
-        phone,
-        email: email || null,
+        fullName: sanitizedName,
+        phone: sanitizedPhone,
+        email: sanitizedEmail,
         timezone: tzForLead,
         status: "SCHEDULED",
         metadata,
@@ -165,9 +157,9 @@ r.post("/facebook", async (req, res) => {
       scheduled_time_unix: scheduledUnix,
       scheduled_time_local: moment
         .unix(scheduledUnix)
-        .tz(QUEBEC_TZ)
+        .tz(tzForLead)
         .format("YYYY-MM-DD HH:mm:ss z"),
-      window_tz: QUEBEC_TZ,
+      window_tz: tzForLead,
       window_hours: { start: START, end: END },
     });
 
@@ -176,21 +168,19 @@ r.post("/facebook", async (req, res) => {
       try {
         const tasks = [];
 
-        if (email) {
+        if (sanitizedEmail) {
           const html = renderTemplate("notify.html", {
             dashboard_link: "https://emploirapide.ca/documents",
           });
           tasks.push(
             sendEmail({
-              to: email,
+              to: sanitizedEmail,
               subject: "Tu veux un job ? Il te reste une seule étape !",
               html,
               text: `Salut 👋\n\nTu viens de remplir notre formulaire 🙌\nBonne nouvelle : finalise ton inscription ici : ${process.env.DASHBOARD_URL}/complete-profile\n\nÀ bientôt !`,
             })
               .then(() =>
-                console.log(
-                  `[INTAKE] email sent to ${email} after 2-minute delay`
-                )
+                console.log(`[INTAKE] email sent to ${sanitizedEmail}`)
               )
               .catch((err) =>
                 console.error("[INTAKE] sendEmail failed:", err.message)
@@ -200,24 +190,31 @@ r.post("/facebook", async (req, res) => {
 
         tasks.push(
           sendSMS({
-            to: phone,
+            to: sanitizedPhone,
             body: `T’as commencé ton inscription, mais ton profil est incomplet. On t’a renvoyé le courriel. Pense à vérifier les spams si jamais.`,
           })
-            .then(() =>
-              console.log(`[INTAKE] SMS sent to ${phone} after 2-minute delay`)
-            )
+            .then(() => console.log(`[INTAKE] SMS sent to ${sanitizedPhone}`))
             .catch((err) =>
               console.error("[INTAKE] sendSMS failed:", err.message)
             )
         );
 
         // Outbound call check
-        const startLocal = nowLocal.clone().hour(START).minute(0).second(0);
-        const endLocal = nowLocal.clone().hour(END).minute(0).second(0);
+        const startLocal = moment
+          .unix(scheduledUnix)
+          .tz(tzForLead)
+          .hour(START)
+          .minute(0)
+          .second(0);
+        const endLocal = moment
+          .unix(scheduledUnix)
+          .tz(tzForLead)
+          .hour(END)
+          .minute(0)
+          .second(0);
         const isInsideWindowNow =
-          nowLocal.isSameOrAfter(startLocal) &&
-          nowLocal.isSameOrBefore(endLocal);
-
+          moment.unix(nowUnix).tz(tzForLead).isSameOrAfter(startLocal) &&
+          moment.unix(nowUnix).tz(tzForLead).isSameOrBefore(endLocal);
         const vmFlag =
           Boolean(variables?.voicemailDetected) ||
           Boolean(metadata?.voicemailDetected) ||
@@ -227,7 +224,7 @@ r.post("/facebook", async (req, res) => {
         if (!vmFlag && (ignoreWindow || forceNow || isInsideWindowNow)) {
           tasks.push(
             callOutbound({
-              to: phone,
+              to: sanitizedPhone,
               lead: { ...lead, scheduledUnix },
               attemptNumber: 1,
               variables,
