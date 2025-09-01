@@ -10,8 +10,8 @@ import { QUEBEC_TZ } from "../lib/quebecTime.js";
 // Add for input sanitization
 
 const prisma = new PrismaClient();
-const { BOOKING_URL, SUPPORT_NUMBER, APP_NAME = "EmploiRapide" } = process.env;
-
+const { SUPPORT_NUMBER, APP_NAME = "EmploiRapide" } = process.env;
+const BOOKING_URL = "https://emploirapide.ca/documents";
 /** Ensure we don't double-send the same step for the same lead with transaction safety */
 async function ensureOnce(leadId, step) {
   try {
@@ -64,6 +64,8 @@ function getAttemptCopy(step, isAnswered = false) {
             <li>✅ Joindre un spécimen de chèque</li>
           </ul></p>
         `),
+        cta_link: BOOKING_URL || "",
+
         closingText: sanitize(
           "Pas de stress. Juste une p’tite étape de plus, et tu pourras recevoir des offres. On garde ta place au chaud 🔥"
         ),
@@ -80,6 +82,8 @@ function getAttemptCopy(step, isAnswered = false) {
         ),
         title: sanitize("Dernier rappel !"),
         cta_text: sanitize("👉 Compléter mon dossier"),
+        cta_link: BOOKING_URL || "",
+
         bodyText: sanitize(`
           <p>Ton inscription est bien commencée… mais sans CV ni spécimen de chèque, on ne peut pas avancer.
           C’est comme vouloir passer une entrevue sans se présenter 😅</p>
@@ -99,6 +103,7 @@ function getAttemptCopy(step, isAnswered = false) {
     subject: sanitize("J’ai tenté de t’appeler pour ta job 🚀"),
     title: sanitize("J’ai tenté de t’appeler pour ta job 🚀"),
     cta_text: sanitize("➡️ Compléter mon inscription"),
+    cta_link: BOOKING_URL || "",
     bodyText: sanitize(`
       <p>Salut,</p>
       <p><strong>J’ai essayé de t’appeler aujourd’hui</strong> pour avancer dans ta recherche d’emploi, mais je n’ai pas réussi à te joindre.</p>
@@ -116,6 +121,7 @@ function getAttemptCopy(step, isAnswered = false) {
       subject: sanitize("Toujours pas eu de nouvelles 📞"),
       title: sanitize("Toujours pas eu de nouvelles 📞"),
       cta_text: sanitize("Compléter mon inscription"),
+      cta_link: BOOKING_URL || "",
       bodyText: sanitize(`
         <p>Tu peux gagner du temps en complétant ton inscription directement ici :</p>
       `),
@@ -134,6 +140,7 @@ function getAttemptCopy(step, isAnswered = false) {
       subject: sanitize("Dernier suivi — on met en pause si pas de nouvelles"),
       title: sanitize("Dernière tentative"),
       subtitle: sanitize("On aimerait vraiment t’aider 🚀"),
+      cta_link: BOOKING_URL || "",
       cta_text: sanitize("➡️ DÉMARRER MA CANDIDATURE"),
       bodyText: sanitize(`
         <p>C’est la 3<sup>e</sup> fois qu’on essaye de t’appeler sans succès.</p>
