@@ -33,9 +33,10 @@ async function ensureOnce(leadId, step) {
 
 /** Validate and sanitize email */
 function hasEmail(lead) {
-  const email = lead?.email ? String(lead.email).trim() : "";
-  const emailRegex = /\S+@\S+\.\S+/;
-  return email && emailRegex.test(email) && !email.includes(";"); // Prevent SQL-like injection
+  const email = (lead?.email ?? "").trim();
+  // Basic RFC5322-ish check, allows + tags and subdomains
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i;
+  return Boolean(email) && emailRegex.test(email) && !email.includes(";"); // Prevent SQL-like injection
 }
 
 /** Validate and sanitize phone */
@@ -154,7 +155,12 @@ async function sendEmailAndSMS({ lead, subject, context, smsBody, skipEmail }) {
     lead,
     ...context,
   };
-
+  console.log("[NOTIFY] sendEmailAndSMS", {
+    leadId: lead?.id,
+    hasEmail: hasEmail(lead),
+    skipEmail,
+    email: lead?.email || null, // if sensitive, obfuscate
+  });
   // EMAIL
   if (!skipEmail && hasEmail(lead)) {
     try {
@@ -246,7 +252,11 @@ export async function handleAttemptNotifications({
   outcome,
 }) {
   if (!lead?.id) return;
-
+  console.log("[NOTIFY] handleAttempt", {
+    leadId: lead?.id,
+    attemptNumber,
+    outcome,
+  });
   // Validate outcome
   const validOutcomes = ["ANSWERED", "NO_ANSWER"];
   if (!validOutcomes.includes(outcome)) {
