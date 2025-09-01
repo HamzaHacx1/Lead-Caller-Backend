@@ -3,10 +3,15 @@ import { Router } from "express";
 import fetch from "node-fetch";
 import crypto from "crypto";
 
-// ⬅️ add this near the top
+import {
+  nextInsideWindowUnix,
+  nextDayInsideWindowUnix,
+  START,
+  END,
+  pickTz,
+} from "../lib/schedule.js";
+import { nowIn, formatInQuebec, QUEBEC_TZ } from "../lib/quebecTime.js";
 import { handleAttemptNotifications } from "../lib/notifications.js";
-import { nextInsideWindowUnixQuebec } from "../lib/schedule.js";
-import { getQuebecNow, QUEBEC_TZ } from "../lib/quebecTime.js";
 
 const prisma = new PrismaClient();
 const r = Router();
@@ -127,32 +132,17 @@ async function postToExternal(payload) {
   }
 }
 
-/** Schedule for the next day, 2 minutes after window start */
-export function nextDayInsideWindowUnix(tz) {
-  try {
-    const todayNext = Number(nextInsideWindowUnixQuebec());
-    if (Number.isFinite(todayNext)) {
-      return todayNext + 24 * 60 * 60 + 120; // +1 day + 2 min
-    }
-  } catch {}
-  const now = Math.floor(Date.now() / 1000);
-  return now + 24 * 60 * 60 + 120; // fallback if schedule helper fails
-}
-
 /** ---------- Route ---------- */
 r.post("/elevenlabs", async (req, res) => {
   try {
-    const qnow = getQuebecNow();
-    console.log(
-      "[WEBHOOK] sig:",
-      req.headers["elevenlabs-signature"],
-      "rawLen:",
-      req.rawBody?.length,
-      "type:",
-      req.body?.type,
-      "quebecNow:",
-      qnow.label
-    );
+    const qcNow = nowIn(QUEBEC_TZ);
+    console.log("[WEBHOOK]", {
+      sig: req.headers["elevenlabs-signature"],
+      rawLen: req.rawBody?.length,
+      type: req.body?.type,
+      quebecNow: qcNow.format("YYYY-MM-DD HH:mm:ss z"),
+      window: `${START}:00–${END}:00`,
+    });
 
     const disableAuth = process.env.DISABLE_WEBHOOK_AUTH === "1";
     const debugBypass =
@@ -343,6 +333,7 @@ r.post("/elevenlabs", async (req, res) => {
           attempts: attemptsCount,
         },
       });
+
       // 🔔 Trigger attempt notifications (structured branch)
       try {
         if (outcome === "NO_ANSWER") {
@@ -479,7 +470,6 @@ r.post("/elevenlabs", async (req, res) => {
         payload: body,
       },
     });
-    // 🔔 Trigger attempt notifications (flat branch)
 
     const attemptsCount = (lead.attempts || 0) + 1;
     await prisma.lead.update({
@@ -491,6 +481,7 @@ r.post("/elevenlabs", async (req, res) => {
         attempts: attemptsCount,
       },
     });
+
     try {
       if (outcome === "NO_ANSWER") {
         await handleAttemptNotifications({
@@ -502,8 +493,8 @@ r.post("/elevenlabs", async (req, res) => {
     } catch (e) {
       console.warn("[NOTIFY] attempt notifications failed (flat)", e?.message);
     }
-    const dc = body?.analysis?.data_collection_results;
 
+    const dc = body?.analysis?.data_collection_results;
     function getDC(key) {
       if (!dc) return null;
       if (Array.isArray(dc)) {

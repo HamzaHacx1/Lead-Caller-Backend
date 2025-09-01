@@ -107,7 +107,7 @@ async function sendSmsCore({ to, body, leadId, mediaUrls = [] }) {
   const updatedConvo = await prisma.conversation.update({
     where: { id: conversation.id },
     data: { lastMsgAt: new Date() },
-    include: { Lead: true },
+    include: { lead: true },
   });
 
   if (created) emit("sms:newConversation", updatedConvo);
@@ -220,7 +220,7 @@ router.get("/conversations", async (req, res) => {
     ...(q
       ? {
           // NOTE: relation field is "Lead", not "lead"
-          Lead: {
+          lead: {
             OR: [
               { fullName: { contains: q, mode: "insensitive" } },
               { phone: { contains: q, mode: "insensitive" } },
@@ -236,7 +236,7 @@ router.get("/conversations", async (req, res) => {
     where,
     orderBy: { lastMsgAt: "desc" },
     take: Number(limit) + 1,
-    include: { Lead: true },
+    include: { lead: true },
   });
 
   const hasMore = rows.length > Number(limit);
@@ -283,13 +283,13 @@ router.post("/conversations/:id/send", async (req, res) => {
 
     const convo = await prisma.conversation.findUnique({
       where: { id: conversationId },
-      include: { Lead: true },
+      include: { lead: true },
     });
     if (!convo)
       return res.status(404).json({ error: "conversation_not_found" });
 
     const result = await sendSmsCore({
-      to: convo.Lead.phone,
+      to: convo.lead.phone,
       body,
       leadId: convo.leadId,
       mediaUrls,
@@ -334,7 +334,7 @@ router.get("/search", async (req, res) => {
 
   const conversations = await prisma.conversation.findMany({
     where: {
-      Lead: {
+      lead: {
         OR: [
           { fullName: { contains: q, mode: "insensitive" } },
           { phone: { contains: q, mode: "insensitive" } },
@@ -343,7 +343,7 @@ router.get("/search", async (req, res) => {
       },
     },
     take: Number(limit),
-    include: { Lead: true },
+    include: { lead: true },
     orderBy: { lastMsgAt: "desc" },
   });
 

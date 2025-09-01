@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import sanitizeHtml from "sanitize-html";
 import moment from "moment-timezone";
 import { Router } from "express";
 
@@ -6,21 +7,29 @@ import {
   START,
   END,
   WINDOW_LEN_SECS,
-  nextInsideWindowUnixQuebec,
   nextInsideWindowUnix,
   pickTz,
 } from "../lib/schedule.js";
 import { renderTemplate } from "../helpers/renderTemplates.js";
-import { getQuebecNow, QUEBEC_TZ } from "../lib/quebecTime.js";
 import { sendEmail, sendSMS } from "../helpers/notify.js";
+import { nowIn, QUEBEC_TZ } from "../lib/quebecTime.js";
 import { callOutbound } from "../lib/elevenlabs.js";
 
 const prisma = new PrismaClient();
 const r = Router();
 
-/** Find next available slot with a 5-minute gap */
+/** Compute today's [start,end) window (moment objects) in a tz */
+function todayWindow(tz) {
+  const now = moment().tz(tz);
+  const start = now.clone().hour(START).minute(0).second(0).millisecond(0);
+  const end = now.clone().hour(END).minute(0).second(0).millisecond(0);
+  return { start, end, now };
+}
+
+/** Find next available slot with a 5-minute gap (respects window & weekends) */
 export async function findNextSlot(startUnix, endUnix, tz) {
   const minGapSeconds = 300; // 5 minutes
+
   const scheduledAt = await prisma.callAttempt.findMany({
     where: {
       scheduledAt: {
@@ -39,6 +48,7 @@ export async function findNextSlot(startUnix, endUnix, tz) {
   );
 
   for (const time of scheduledTimes) {
+    // If overlapping within min gap, hop to just after that slot
     if (time <= nextSlot && time + minGapSeconds > nextSlot) {
       nextSlot = time + minGapSeconds;
     }
@@ -46,18 +56,43 @@ export async function findNextSlot(startUnix, endUnix, tz) {
 
   // Ensure slot is within window and not on weekend
   const slotMoment = moment.unix(nextSlot).tz(tz);
-  if (nextSlot > endUnix || slotMoment.hour() < 9 || slotMoment.hour() >= 19) {
-    let nextDay = slotMoment.clone().add(1, "day");
-    while (nextDay.day() === 0 || nextDay.day() === 6) {
-      nextDay.add(1, "day");
-    }
-    const nextStart = nextDay.hour(9).minute(0).second(0).millisecond(0).unix();
-    const nextEnd = nextStart + (19 - 9) * 3600; // 10 hours in seconds
-    return findNextSlot(nextStart, nextEnd, tz); // Recurse with new window
+  const weekday = slotMoment.day(); // 0 Sun ... 6 Sat
+  if (weekday === 0 || weekday === 6) {
+    // Weekend: move to next weekday at START
+    let nextDay = slotMoment
+      .clone()
+      .add(1, "day")
+      .hour(START)
+      .minute(0)
+      .second(0)
+      .millisecond(0);
+    while (nextDay.day() === 0 || nextDay.day() === 6)
+      nextDay = nextDay.add(1, "day");
+    const nextStart = nextDay.unix();
+    const nextEnd = nextStart + (END - START) * 3600;
+    return findNextSlot(nextStart, nextEnd, tz);
+  }
+
+  const hour = slotMoment.hour();
+  if (nextSlot > endUnix || hour < START || hour >= END) {
+    // After hours: go to next day START (skip weekends)
+    let nextDay = slotMoment
+      .clone()
+      .add(1, "day")
+      .hour(START)
+      .minute(0)
+      .second(0)
+      .millisecond(0);
+    while (nextDay.day() === 0 || nextDay.day() === 6)
+      nextDay = nextDay.add(1, "day");
+    const nextStart = nextDay.unix();
+    const nextEnd = nextStart + (END - START) * 3600;
+    return findNextSlot(nextStart, nextEnd, tz);
   }
 
   return nextSlot;
 }
+
 r.post("/facebook", async (req, res) => {
   try {
     const {
@@ -72,7 +107,7 @@ r.post("/facebook", async (req, res) => {
       ignoreWindow = false,
     } = req.body || {};
 
-    // Input validation
+    // Input validation + sanitize
     if (!full_name || !phone) {
       return res
         .status(400)
@@ -89,6 +124,7 @@ r.post("/facebook", async (req, res) => {
     const sanitizedEmail = email
       ? sanitizeHtml(email, { allowedTags: [], allowedAttributes: {} })
       : null;
+
     if (
       sanitizedPhone.length < 10 ||
       (sanitizedEmail && !/\S+@\S+\.\S+/.test(sanitizedEmail))
@@ -98,11 +134,10 @@ r.post("/facebook", async (req, res) => {
         .json({ ok: false, error: "invalid_phone_or_email" });
     }
 
-    const qnow = getQuebecNow();
-    const nowUnix = qnow.unixNow;
-    const nowLocal = moment.unix(nowUnix).tz(QUEBEC_TZ);
+    const qcNow = nowIn(QUEBEC_TZ);
+    const nowUnix = qcNow.unix();
 
-    // Deduplication
+    // Dedup
     if (fbLeadId) {
       const exists = await prisma.lead.findUnique({ where: { fbLeadId } });
       if (exists) {
@@ -111,26 +146,31 @@ r.post("/facebook", async (req, res) => {
       }
     }
 
-    // Use lead's timezone or QUEBEC_TZ
+    // Lead tz (validated)
     const tzForLead = pickTz(timezone) || process.env.DEFAULT_TZ || QUEBEC_TZ;
 
-    // Determine scheduling time
+    // Determine schedule time
     let scheduledUnix;
     if (forceNow || ignoreWindow) {
-      // Immediate call: 2 minutes from now
-      scheduledUnix = nowUnix + 120;
+      scheduledUnix = nowUnix + 120; // 2 min from now
     } else {
-      // Schedule within window, respecting lead's timezone
-      const startUnix = await nextInsideWindowUnix(tzForLead);
-      const endUnix = startUnix + WINDOW_LEN_SECS;
-      const isInsideWindowNow = nowUnix >= startUnix && nowUnix <= endUnix;
-      let targetUnix = isInsideWindowNow ? nowUnix + 120 : startUnix;
+      // Build today's window in lead tz and base "inside window now" off that,
+      // not off nextInsideWindowUnix (which can be in the future).
+      const { start, end, now } = todayWindow(tzForLead);
+      const insideNow = now.isSameOrAfter(start) && now.isBefore(end);
+
+      let startUnix = await nextInsideWindowUnix(tzForLead); // next valid slot start
+      let endUnix = startUnix + WINDOW_LEN_SECS;
+
+      // If we are already inside window, let’s aim 2 min from now
+      const targetUnix = insideNow ? now.add(2, "minutes").unix() : startUnix;
+
       scheduledUnix = await findNextSlot(targetUnix, endUnix, tzForLead);
     }
 
     const scheduledAt = new Date(scheduledUnix * 1000);
 
-    // Save lead + call attempt
+    // Create lead + initial attempt
     const lead = await prisma.lead.create({
       data: {
         fbLeadId: fbLeadId || null,
@@ -141,11 +181,7 @@ r.post("/facebook", async (req, res) => {
         status: "SCHEDULED",
         metadata,
         callAttempts: {
-          create: {
-            attemptNumber: 1,
-            status: "SCHEDULED",
-            scheduledAt,
-          },
+          create: { attemptNumber: 1, status: "SCHEDULED", scheduledAt },
         },
       },
     });
@@ -163,7 +199,7 @@ r.post("/facebook", async (req, res) => {
       window_hours: { start: START, end: END },
     });
 
-    // Background tasks with 2-minute delay
+    // Background tasks after 2 minutes
     setTimeout(async () => {
       try {
         const tasks = [];
@@ -199,29 +235,16 @@ r.post("/facebook", async (req, res) => {
             )
         );
 
-        // Outbound call check
-        const startLocal = moment
-          .unix(scheduledUnix)
-          .tz(tzForLead)
-          .hour(START)
-          .minute(0)
-          .second(0);
-        const endLocal = moment
-          .unix(scheduledUnix)
-          .tz(tzForLead)
-          .hour(END)
-          .minute(0)
-          .second(0);
-        const isInsideWindowNow =
-          moment.unix(nowUnix).tz(tzForLead).isSameOrAfter(startLocal) &&
-          moment.unix(nowUnix).tz(tzForLead).isSameOrBefore(endLocal);
+        // Immediate outbound call if conditions allow
+        const { start, end, now } = todayWindow(tzForLead);
+        const insideNow = now.isSameOrAfter(start) && now.isBefore(end);
         const vmFlag =
           Boolean(variables?.voicemailDetected) ||
           Boolean(metadata?.voicemailDetected) ||
           Boolean(variables?.hangup_on_voicemail) ||
           Boolean(metadata?.hangup_on_voicemail);
 
-        if (!vmFlag && (ignoreWindow || forceNow || isInsideWindowNow)) {
+        if (!vmFlag && (ignoreWindow || forceNow || insideNow)) {
           tasks.push(
             callOutbound({
               to: sanitizedPhone,
@@ -245,7 +268,7 @@ r.post("/facebook", async (req, res) => {
       } catch (err) {
         console.error("[INTAKE background error]", err);
       }
-    }, 120000); // 2-minute delay (120 seconds)
+    }, 120000);
   } catch (e) {
     console.error("[INTAKE error]", e);
     return res.status(500).json({ ok: false, error: "intake_failed" });

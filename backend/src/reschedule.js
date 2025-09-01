@@ -2,133 +2,131 @@ import { PrismaClient } from "@prisma/client";
 import moment from "moment-timezone";
 import cron from "node-cron";
 
-import {
-  getQuebecNow,
-  isQuebecWeekend,
-  getNextQuebecWeekdayUnix,
-  QUEBEC_TZ,
-} from "./lib/quebecTime.js";
-import { nextInsideWindowUnix } from "./lib/schedule.js";
+import { nextInsideWindowUnix, START, END, pickTz } from "./lib/schedule.js";
+import { QUEBEC_TZ, nowIn, formatInQuebec } from "./lib/quebecTime.js";
 
 const prisma = new PrismaClient();
 
-async function detectAndRescheduleAnomalies() {
-  const now = moment().tz(QUEBEC_TZ);
-  const utcNow = moment().utc();
+function logNow() {
+  const nowQc = nowIn(QUEBEC_TZ);
   console.log(
-    `Running at ${now.format(
-      "YYYY-MM-DD HH:mm:ss z"
-    )} [UTC: ${utcNow.format()}]`
+    `Running at ${nowQc.format("YYYY-MM-DD HH:mm:ss z")} [UTC: ${moment
+      .utc()
+      .format()}], window ${START}:00–${END}:00`
+  );
+}
+
+async function detectAndRescheduleAnomalies() {
+  logNow();
+
+  const utcNow = moment.utc();
+
+  const overdueAttempts = await prisma.callAttempt.findMany({
+    where: { status: "SCHEDULED", scheduledAt: { lt: utcNow.toDate() } },
+    include: { lead: true },
+    take: 200,
+  });
+
+  const overdueFailedLeads = await prisma.lead.findMany({
+    where: {
+      nextScheduledAt: { lt: utcNow.toDate() },
+      attempts: { gte: 3 },
+      status: "FAILED",
+    },
+    include: { callAttempts: true },
+    take: 200,
+  });
+
+  // Flatten to attempts and de-dup by id; sort by previous scheduledAt
+  const allTargets = [
+    ...overdueAttempts,
+    ...overdueFailedLeads.flatMap((l) => l.callAttempts || []),
+  ]
+    .filter(Boolean)
+    .reduce((map, a) => map.set(a.id, a), new Map())
+    .values();
+
+  const attemptsSorted = [...allTargets].sort(
+    (a, b) => new Date(a.scheduledAt) - new Date(b.scheduledAt)
   );
 
-  try {
-    const overdueAttempts = await prisma.callAttempt.findMany({
-      where: {
-        status: "SCHEDULED",
-        scheduledAt: { lt: utcNow.toDate() },
-      },
-      include: { lead: true },
-      take: 100, // Limit to prevent overload
-    });
+  if (attemptsSorted.length === 0) {
+    console.log("No overdue attempts or failed leads to process.");
+    return;
+  }
 
-    const overdueFailedLeads = await prisma.lead.findMany({
-      where: {
-        nextScheduledAt: { lt: utcNow.toDate() },
-        attempts: { gte: 3 },
-        status: "FAILED",
-      },
-      include: { callAttempts: true },
-      take: 100,
-    });
+  let dayIndex = 0; // stagger index only for today within window
 
-    const allTargets = [
-      ...overdueAttempts,
-      ...overdueFailedLeads.flatMap((l) => l.callAttempts),
-    ].filter((a) => a);
+  for (const attempt of attemptsSorted) {
+    const lead =
+      attempt.lead ||
+      (await prisma.lead.findUnique({ where: { id: attempt.leadId } }));
+    if (!lead) continue;
 
-    if (allTargets.length === 0) {
-      console.log("No overdue attempts or failed leads to process.");
-      return;
+    const tz = pickTz(lead.timezone);
+    const nextUnix = nextInsideWindowUnix(tz);
+    let slot = moment.unix(nextUnix).tz(tz);
+
+    // Stagger 5-min slots but NEVER push past END
+    const endCap = slot.clone().hour(END).minute(0).second(0).millisecond(0);
+    if (
+      slot.isSame(nowIn(tz), "day") &&
+      slot.hour() >= START &&
+      slot.hour() < END
+    ) {
+      const stagger = dayIndex * 300; // seconds
+      const cand = slot.clone().add(stagger, "seconds");
+      slot = cand.isSameOrBefore(endCap) ? cand : endCap; // clamp
+      dayIndex += 1;
+    } else {
+      dayIndex = 0; // reset for next day
     }
 
-    for (const [index, attempt] of allTargets.entries()) {
-      if (index >= 100) {
-        console.warn(
-          "Max reschedule limit reached, skipping remaining attempts"
-        );
-        break;
-      }
-      const lead =
-        attempt.lead ||
-        overdueFailedLeads.find((l) => l.id === attempt.leadId)?.lead;
-      if (!lead) continue;
+    const scheduledAt = slot.toDate();
+    const maxAttempts = lead.maxAttempts ?? 3;
+    const nextAttemptNumber = (attempt.attemptNumber ?? 0) + 1;
+
+    // Reset FAILED leads that are overdue
+    if (lead.status === "FAILED" && lead.attempts >= maxAttempts) {
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: { attempts: 0, status: "SCHEDULED" },
+      });
+    }
+
+    try {
+      await prisma.$transaction([
+        prisma.callAttempt.update({
+          where: { id: attempt.id },
+          data: { scheduledAt, attemptNumber: nextAttemptNumber },
+        }),
+        prisma.lead.update({
+          where: { id: lead.id },
+          data: {
+            status: "SCHEDULED",
+            attempts: (lead.attempts ?? 0) + 1,
+            nextScheduledAt: scheduledAt,
+          },
+        }),
+      ]);
 
       console.log(
-        `Processing lead ${lead.id}, attempt ${
-          attempt.id
-        }, current scheduledAt: ${moment(attempt.scheduledAt)
-          .tz(QUEBEC_TZ)
-          .format("YYYY-MM-DD HH:mm:ss z")}`
+        `Successfully rescheduled lead ${lead.id} to ${moment(scheduledAt)
+          .tz(tz)
+          .format("YYYY-MM-DD HH:mm:ss z")} (tz=${tz})`
       );
-
-      const tz = lead.timezone || QUEBEC_TZ;
-      let nextScheduledUnix = await nextInsideWindowUnix(tz); // Respect 9 AM–7 PM window
-
-      // Apply stagger only within the same day window, with max limit
-      const slotMoment = moment.unix(nextScheduledUnix).tz(tz);
-      const maxStaggerIndex = Math.floor((19 - slotMoment.hour()) * 12); // Max stagger to stay within 7 PM
-      const effectiveIndex = Math.min(index, maxStaggerIndex);
-      if (
-        slotMoment.isSame(now, "day") &&
-        slotMoment.hour() >= 9 &&
-        slotMoment.hour() < 19
-      ) {
-        nextScheduledUnix += effectiveIndex * 300; // 5-minute stagger with limit
-      }
-
-      const scheduledAt = moment.unix(nextScheduledUnix).tz(tz).toDate();
-      const maxAttempts = lead.maxAttempts || 3;
-
-      if (
-        lead.attempts >= maxAttempts ||
-        moment(lead.nextScheduledAt).isBefore(now)
-      ) {
-        await prisma.lead.update({
-          where: { id: lead.id },
-          data: { attempts: 0, status: "SCHEDULED" },
-        });
-      }
-
-      try {
-        await prisma.$transaction(async (tx) => {
-          await tx.callAttempt.update({
-            where: { id: attempt.id },
-            data: { scheduledAt, attemptNumber: lead.attempts + 1 },
-          });
-          await tx.lead.update({
-            where: { id: lead.id },
-            data: {
-              status: "SCHEDULED",
-              attempts: lead.attempts + 1,
-              nextScheduledAt: scheduledAt,
-            },
-          });
-        });
-        console.log(
-          `Successfully rescheduled lead ${lead.id} to ${moment(scheduledAt)
-            .tz(tz)
-            .format("YYYY-MM-DD HH:mm:ss z")}`
-        );
-      } catch (error) {
-        console.error(`Failed to reschedule lead ${lead.id}: ${error.message}`);
-      }
+    } catch (err) {
+      console.error(`Failed to reschedule lead ${lead.id}: ${err.message}`);
     }
-  } catch (error) {
-    console.error(`Cron error: ${error.message}`);
   }
 }
 
-cron.schedule("*/5 * * * *", () => detectAndRescheduleAnomalies());
-detectAndRescheduleAnomalies().catch((error) =>
-  console.error(`Cron error: ${error.message}`)
+// ⬇️ Pin the cron to Québec time (important)
+cron.schedule("*/5 * * * *", () => detectAndRescheduleAnomalies(), {
+  timezone: QUEBEC_TZ,
+});
+
+// Run once on boot
+detectAndRescheduleAnomalies().catch((e) =>
+  console.error(`Cron error: ${e.message}`)
 );

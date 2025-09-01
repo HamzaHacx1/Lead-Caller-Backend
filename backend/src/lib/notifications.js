@@ -2,10 +2,10 @@ import { PrismaClient } from "@prisma/client";
 import sanitizeHtml from "sanitize-html"; // Add for input sanitization
 import moment from "moment-timezone";
 
-import { getQuebecNow, isQuebecWeekend, QUEBEC_TZ } from "../lib/quebecTime.js";
 import { renderTemplate as renderHbsFile } from "../helpers/renderTemplates.js";
 import { sendEmail, sendSMS } from "../helpers/notify.js";
 import { nextInsideWindowUnix } from "../lib/schedule.js";
+import { QUEBEC_TZ } from "../lib/quebecTime.js";
 
 // Add for input sanitization
 
