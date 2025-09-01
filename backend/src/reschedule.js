@@ -69,8 +69,11 @@ async function detectAndRescheduleAnomalies() {
       const tz = lead.timezone || QUEBEC_TZ;
       let nextScheduledUnix = await nextInsideWindowUnix(tz); // Respect 9 AM–7 PM window
 
-      // Apply stagger to avoid overlap
-      nextScheduledUnix += index * 300; // 5-minute stagger
+      // Apply stagger only if within the same day window
+      const slotMoment = moment.unix(nextScheduledUnix).tz(tz);
+      if (slotMoment.isSame(now, "day")) {
+        nextScheduledUnix += index * 300; // 5-minute stagger within day
+      }
 
       const scheduledAt = moment.unix(nextScheduledUnix).tz(tz).toDate();
       const maxAttempts = lead.maxAttempts || 3;
