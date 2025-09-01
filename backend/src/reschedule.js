@@ -6,9 +6,8 @@ import {
   getQuebecNow,
   isQuebecWeekend,
   getNextQuebecWeekdayUnix,
-  QUEBEC_TZ,
 } from "./lib/quebecTime.js";
-import { nextInsideWindowUnix } from "./lib/schedule.js";
+import { nextInsideWindowUnix, QUEBEC_TZ } from "./lib/schedule.js";
 
 const prisma = new PrismaClient();
 
@@ -74,14 +73,16 @@ async function detectAndRescheduleAnomalies() {
       const tz = lead.timezone || QUEBEC_TZ;
       let nextScheduledUnix = await nextInsideWindowUnix(tz); // Respect 9 AM–7 PM window
 
-      // Apply stagger only within the same day window
+      // Apply stagger only within the same day window, with max limit
       const slotMoment = moment.unix(nextScheduledUnix).tz(tz);
+      const maxStaggerIndex = Math.floor((19 - slotMoment.hour()) * 12); // Max stagger to stay within 7 PM
+      const effectiveIndex = Math.min(index, maxStaggerIndex);
       if (
         slotMoment.isSame(now, "day") &&
         slotMoment.hour() >= 9 &&
         slotMoment.hour() < 19
       ) {
-        nextScheduledUnix += index * 300; // 5-minute stagger
+        nextScheduledUnix += effectiveIndex * 300; // 5-minute stagger with limit
       }
 
       const scheduledAt = moment.unix(nextScheduledUnix).tz(tz).toDate();
