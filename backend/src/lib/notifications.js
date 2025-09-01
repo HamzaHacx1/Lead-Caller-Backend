@@ -112,7 +112,7 @@ function getAttemptCopy(step, isAnswered = false) {
     closingText: sanitize("À bientôt !"),
     smsBody: (ctx) =>
       sanitize(
-        `Simon d’${APP_NAME} — J’ai tenté de t’appeler pour ta recherche d’emploi. Rappelle-moi !`
+        `Simon d’${APP_NAME} — J’ai tenté de t’appeler pour ta recherche d’emploi. Rappelle moi !`
       ),
   };
 
