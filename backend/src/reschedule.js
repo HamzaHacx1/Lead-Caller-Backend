@@ -2,7 +2,7 @@ import { PrismaClient } from "@prisma/client";
 import moment from "moment-timezone";
 import cron from "node-cron";
 
-import { QUEBEC_TZ } from "./lib/quebecTime.js";
+import { QUEBEC_TZ, nextInsideWindowUnix } from "./lib/schedule.js";
 
 const prisma = new PrismaClient();
 
@@ -20,15 +20,15 @@ async function detectAndRescheduleAnomalies() {
     const overdueAttempts = await prisma.callAttempt.findMany({
       where: {
         status: "SCHEDULED",
-        scheduledAt: { lt: now.toDate() },
+        scheduledAt: { lt: utcNow.toDate() }, // Use UTC for consistency
       },
-      include: { lead: true }, // Corrected to lowercase 'lead'
+      include: { lead: true },
     });
 
     // Check for overdue FAILED leads with max attempts
     const overdueFailedLeads = await prisma.lead.findMany({
       where: {
-        nextScheduledAt: { lt: now.toDate() },
+        nextScheduledAt: { lt: utcNow.toDate() },
         attempts: { gte: 3 }, // Assuming maxAttempts is 3
         status: "FAILED",
       },
@@ -59,20 +59,14 @@ async function detectAndRescheduleAnomalies() {
           .format("YYYY-MM-DD HH:mm:ss z")}`
       );
 
-      let nextScheduledUnix = now.unix() + 30 + index * 300; // 30s delay + 5m stagger
-      const utcMoment = moment.unix(nextScheduledUnix).utc();
+      // Use lead's timezone or QUEBEC_TZ
+      const tz = lead.timezone || QUEBEC_TZ;
+      let nextScheduledUnix = await nextInsideWindowUnix(tz); // Respect 9 AM–7 PM window
 
-      // Block weekends (Saturday=6, Sunday=0 in UTC)
-      if (utcMoment.day() === 0 || utcMoment.day() === 6) {
-        nextScheduledUnix = utcMoment
-          .add(2, "days")
-          .hour(9)
-          .minute(0)
-          .second(0)
-          .unix(); // Next Monday 9 AM UTC
-      }
+      // Apply stagger to avoid overlap
+      nextScheduledUnix += index * 300; // 5-minute stagger
 
-      const scheduledAt = moment.unix(nextScheduledUnix).toDate();
+      const scheduledAt = moment.unix(nextScheduledUnix).tz(tz).toDate();
       const maxAttempts = lead.maxAttempts || 3;
 
       if (
@@ -102,7 +96,7 @@ async function detectAndRescheduleAnomalies() {
         });
         console.log(
           `Successfully rescheduled lead ${lead.id} to ${moment(scheduledAt)
-            .tz(QUEBEC_TZ)
+            .tz(tz)
             .format("YYYY-MM-DD HH:mm:ss z")}`
         );
       } catch (error) {
