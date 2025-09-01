@@ -6,9 +6,8 @@ import {
   getQuebecNow,
   isQuebecWeekend,
   getNextQuebecWeekdayUnix,
-  QUEBEC_TZ,
 } from "./lib/quebecTime.js";
-import { nextInsideWindowUnix } from "./lib/schedule.js";
+import { nextInsideWindowUnix, QUEBEC_TZ } from "./lib/schedule.js";
 
 const prisma = new PrismaClient();
 
@@ -22,23 +21,23 @@ async function detectAndRescheduleAnomalies() {
   );
 
   try {
-    // Check for all overdue SCHEDULED attempts (any attempt number)
     const overdueAttempts = await prisma.callAttempt.findMany({
       where: {
         status: "SCHEDULED",
-        scheduledAt: { lt: utcNow.toDate() }, // Use UTC for consistency
+        scheduledAt: { lt: utcNow.toDate() },
       },
       include: { lead: true },
+      take: 100, // Limit to prevent overload
     });
 
-    // Check for overdue FAILED leads with max attempts
     const overdueFailedLeads = await prisma.lead.findMany({
       where: {
         nextScheduledAt: { lt: utcNow.toDate() },
-        attempts: { gte: 3 }, // Assuming maxAttempts is 3
+        attempts: { gte: 3 },
         status: "FAILED",
       },
       include: { callAttempts: true },
+      take: 100,
     });
 
     const allTargets = [
@@ -52,6 +51,12 @@ async function detectAndRescheduleAnomalies() {
     }
 
     for (const [index, attempt] of allTargets.entries()) {
+      if (index >= 100) {
+        console.warn(
+          "Max reschedule limit reached, skipping remaining attempts"
+        );
+        break;
+      }
       const lead =
         attempt.lead ||
         overdueFailedLeads.find((l) => l.id === attempt.leadId)?.lead;
@@ -65,14 +70,17 @@ async function detectAndRescheduleAnomalies() {
           .format("YYYY-MM-DD HH:mm:ss z")}`
       );
 
-      // Use lead's timezone or QUEBEC_TZ
       const tz = lead.timezone || QUEBEC_TZ;
       let nextScheduledUnix = await nextInsideWindowUnix(tz); // Respect 9 AM–7 PM window
 
-      // Apply stagger only if within the same day window
+      // Apply stagger only within the same day window
       const slotMoment = moment.unix(nextScheduledUnix).tz(tz);
-      if (slotMoment.isSame(now, "day")) {
-        nextScheduledUnix += index * 300; // 5-minute stagger within day
+      if (
+        slotMoment.isSame(now, "day") &&
+        slotMoment.hour() >= 9 &&
+        slotMoment.hour() < 19
+      ) {
+        nextScheduledUnix += index * 300; // 5-minute stagger
       }
 
       const scheduledAt = moment.unix(nextScheduledUnix).tz(tz).toDate();
@@ -84,7 +92,7 @@ async function detectAndRescheduleAnomalies() {
       ) {
         await prisma.lead.update({
           where: { id: lead.id },
-          data: { attempts: 0, status: "SCHEDULED" }, // Reset for retry
+          data: { attempts: 0, status: "SCHEDULED" },
         });
       }
 
