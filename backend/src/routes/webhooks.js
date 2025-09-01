@@ -385,7 +385,7 @@ r.post("/elevenlabs", async (req, res) => {
             attemptNumber: attemptsCount + 1,
             status: "SCHEDULED",
             scheduledAt: new Date(scheduledUnix * 1000),
-            metadata: { schedule_reason: outcome, hangup_on_voicemail: true },
+            payload: { schedule_reason: outcome, hangup_on_voicemail: true },
           },
         });
       }
@@ -543,7 +543,7 @@ r.post("/elevenlabs", async (req, res) => {
           attemptNumber: attemptsCount + 1,
           status: "SCHEDULED",
           scheduledAt: new Date(scheduledUnix * 1000),
-          metadata: { schedule_reason: outcome, hangup_on_voicemail: true },
+          payload: { schedule_reason: outcome, hangup_on_voicemail: true },
         },
       });
     }

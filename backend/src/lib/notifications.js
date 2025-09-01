@@ -164,7 +164,7 @@ async function sendEmailAndSMS({ lead, subject, context, smsBody, skipEmail }) {
   // EMAIL
   if (!skipEmail && hasEmail(lead)) {
     try {
-      const html = renderHbsFile("no_answer_base.html.hbs", baseCtx);
+      const html = renderHbsFile("no_answer_base.hbs", baseCtx);
       await sendEmail({ to: String(lead.email).trim(), subject, html });
       console.log("[NOTIFY:email] sent", { leadId: lead.id });
     } catch (e) {
