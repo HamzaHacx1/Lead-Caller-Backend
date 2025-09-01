@@ -8,9 +8,14 @@ const prisma = new PrismaClient();
 
 async function detectAndRescheduleAnomalies() {
   const now = moment().tz(QUEBEC_TZ);
-  console.log(`Running at ${now.format("YYYY-MM-DD HH:mm:ss z")}`);
+  const utcNow = moment().utc();
+  console.log(
+    `Running at ${now.format(
+      "YYYY-MM-DD HH:mm:ss z"
+    )} [UTC: ${utcNow.format()}]`
+  );
 
-  // Check for overdue SCHEDULED attempts (any attempt number)
+  // Check for all overdue SCHEDULED attempts (any attempt number)
   const overdueAttempts = await prisma.callAttempt.findMany({
     where: {
       status: "SCHEDULED",
@@ -32,7 +37,12 @@ async function detectAndRescheduleAnomalies() {
   const allTargets = [
     ...overdueAttempts,
     ...overdueFailedLeads.flatMap((l) => l.callAttempts),
-  ];
+  ].filter((a) => a);
+
+  if (allTargets.length === 0) {
+    console.log("No overdue attempts or failed leads to process.");
+    return;
+  }
 
   for (const [index, attempt] of allTargets.entries()) {
     const lead =
@@ -49,11 +59,11 @@ async function detectAndRescheduleAnomalies() {
     );
 
     let nextScheduledUnix = now.unix() + 30 + index * 300; // 30s delay + 5m stagger
-    const utcNow = moment().utc();
+    const utcMoment = moment.unix(nextScheduledUnix).utc();
 
     // Block weekends (Saturday=6, Sunday=0 in UTC)
-    if (utcNow.day() === 0 || utcNow.day() === 6) {
-      nextScheduledUnix = utcNow
+    if (utcMoment.day() === 0 || utcMoment.day() === 6) {
+      nextScheduledUnix = utcMoment
         .add(2, "days")
         .hour(9)
         .minute(0)
@@ -64,7 +74,10 @@ async function detectAndRescheduleAnomalies() {
     const scheduledAt = moment.unix(nextScheduledUnix).toDate();
     const maxAttempts = lead.maxAttempts || 3;
 
-    if (lead.attempts >= maxAttempts) {
+    if (
+      lead.attempts >= maxAttempts ||
+      moment(lead.nextScheduledAt).isBefore(now)
+    ) {
       await prisma.lead.update({
         where: { id: lead.id },
         data: { attempts: 0, status: "SCHEDULED" }, // Reset for retry
