@@ -84,7 +84,7 @@ app.use("/webhooks", webhooks);
 app.use("/metrics", metrics);
 app.use("/auth", authRoutes);
 app.use("/sms", sms);
-app.use("/test-api", testApi);
+app.use("/test", testApi);
 // --- HTTP + Socket.IO ---
 const server = http.createServer(app);
 const io = new SocketIOServer(server, {

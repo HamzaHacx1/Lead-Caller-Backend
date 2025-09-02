@@ -9,6 +9,9 @@ function LeadForm() {
     email: "",
     forceNow: false,
     ignoreWindow: false,
+    outcomes: "ANSWERED",
+    simulate: true,
+    useQuickNotifications: true,
   });
   const [response, setResponse] = useState(null);
   const [error, setError] = useState(null);
@@ -26,11 +29,19 @@ function LeadForm() {
     setError(null);
     setResponse(null);
 
+    const payload = {
+      ...formData,
+      outcomes: formData.outcomes
+        .split(",")
+        .map((o) => o.trim())
+        .filter(Boolean),
+    };
+
     try {
-      const res = await fetch(`${API_URL}/intake/facebook`, {
+      const res = await fetch(`${API_URL}/test-flow`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formData),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (res.ok) {
@@ -43,6 +54,9 @@ function LeadForm() {
           email: "",
           forceNow: false,
           ignoreWindow: false,
+          outcomes: "ANSWERED",
+          simulate: true,
+          useQuickNotifications: true,
         });
       } else {
         setError(data.error || "Request failed");
@@ -98,6 +112,18 @@ function LeadForm() {
             />
           </div>
           <div className="mb-4">
+            <label className="block text-sm font-medium text-gray-700">
+              Outcomes (comma-separated, e.g. ANSWERED,NO_ANSWER)
+            </label>
+            <input
+              type="text"
+              name="outcomes"
+              value={formData.outcomes}
+              onChange={handleChange}
+              className="w-full p-2 mt-1 border rounded-md focus:ring-blue-500 focus:border-blue-500 sm:p-3"
+            />
+          </div>
+          <div className="mb-4">
             <label className="flex items-center">
               <input
                 type="checkbox"
@@ -109,7 +135,7 @@ function LeadForm() {
               <span className="text-sm text-gray-700">Force Now</span>
             </label>
           </div>
-          <div className="mb-6">
+          <div className="mb-4">
             <label className="flex items-center">
               <input
                 type="checkbox"
@@ -119,6 +145,32 @@ function LeadForm() {
                 className="w-4 h-4 mr-2 text-blue-500 border-gray-300 rounded focus:ring-blue-500"
               />
               <span className="text-sm text-gray-700">Ignore Window</span>
+            </label>
+          </div>
+          <div className="mb-4">
+            <label className="flex items-center">
+              <input
+                type="checkbox"
+                name="simulate"
+                checked={formData.simulate}
+                onChange={handleChange}
+                className="w-4 h-4 mr-2 text-blue-500 border-gray-300 rounded focus:ring-blue-500"
+              />
+              <span className="text-sm text-gray-700">Simulate</span>
+            </label>
+          </div>
+          <div className="mb-6">
+            <label className="flex items-center">
+              <input
+                type="checkbox"
+                name="useQuickNotifications"
+                checked={formData.useQuickNotifications}
+                onChange={handleChange}
+                className="w-4 h-4 mr-2 text-blue-500 border-gray-300 rounded focus:ring-blue-500"
+              />
+              <span className="text-sm text-gray-700">
+                Use Quick Notifications
+              </span>
             </label>
           </div>
           <button
