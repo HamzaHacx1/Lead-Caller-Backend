@@ -64,7 +64,7 @@ r.post("/test-flow", async (req, res) => {
 
     const lead = await prisma.lead.create({
       data: {
-        fbLeadId: null,
+        fbLeadId: `test-${Math.floor(Math.random() * 1000000)}`,
         fullName: sanitizedName,
         phone: sanitizedPhone,
         email: sanitizedEmail,
