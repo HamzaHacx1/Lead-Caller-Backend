@@ -7,11 +7,15 @@ import {
   handleAttemptNotifications,
   handleQuickAttemptNotifications,
 } from "../lib/notifications.js";
+import {
+  pickTz,
+  nextDayInsideWindowUnix,
+  nextInsideWindowUnix,
+} from "../lib/schedule.js";
 import { renderTemplate } from "../helpers/renderTemplates.js";
 import { sendEmail, sendSMS } from "../helpers/notify.js";
 import { callOutbound } from "../lib/elevenlabs.js";
 import { QUEBEC_TZ } from "../lib/quebecTime.js";
-import { pickTz } from "../lib/schedule.js";
 
 const prisma = new PrismaClient();
 const r = Router();

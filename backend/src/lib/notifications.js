@@ -3,8 +3,8 @@ import sanitizeHtml from "sanitize-html";
 import moment from "moment-timezone";
 
 import { renderTemplate as renderHbsFile } from "../helpers/renderTemplates.js";
+import { isInsideQuebecWindow } from "../lib/schedule.js";
 import { sendEmail, sendSMS } from "../helpers/notify.js";
-import { nextInsideWindowUnix } from "../lib/schedule.js";
 import { QUEBEC_TZ } from "../lib/quebecTime.js";
 
 const prisma = new PrismaClient();

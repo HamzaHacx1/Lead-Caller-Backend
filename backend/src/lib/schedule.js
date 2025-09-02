@@ -70,3 +70,17 @@ export function nextDayInsideWindowUnix(tz = QUEBEC_TZ) {
   while (when.day() === 0 || when.day() === 6) when = when.add(1, "day");
   return when.unix();
 }
+export function isInsideQuebecWindow(
+  startHour = START,
+  endHour = END,
+  date = new Date(),
+  tz = QUEBEC_TZ
+) {
+  const zone = pickTz(tz);
+  const m = moment.tz(date, zone);
+
+  if (isWeekend(zone)) return false;
+
+  const h = m.hour();
+  return h >= startHour && h < endHour;
+}
