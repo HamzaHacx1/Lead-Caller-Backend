@@ -55,7 +55,8 @@ async function detectAndRescheduleAnomalies() {
     return;
   }
 
-  let dayIndex = 0; // stagger index only for today within window
+  // Group by initial nextUnix
+  const groups = new Map();
 
   for (const attempt of attemptsSorted) {
     const lead =
@@ -65,58 +66,112 @@ async function detectAndRescheduleAnomalies() {
 
     const tz = pickTz(lead.timezone);
     const nextUnix = nextInsideWindowUnix(tz);
-    let slot = moment.unix(nextUnix).tz(tz);
 
-    // Stagger 5-min slots but NEVER push past END
-    const endCap = slot.clone().hour(END).minute(0).second(0).millisecond(0);
-    if (
-      slot.isSame(nowIn(tz), "day") &&
-      slot.hour() >= START &&
-      slot.hour() < END
-    ) {
+    if (!groups.has(nextUnix)) groups.set(nextUnix, []);
+    groups.get(nextUnix).push({ attempt, lead });
+  }
+
+  for (const [nextUnix, group] of groups.entries()) {
+    if (group.length < 2) {
+      // No stagger needed for single
+      for (const { attempt, lead } of group) {
+        const tz = pickTz(lead.timezone);
+        const scheduledAt = moment.unix(nextUnix).tz(tz).toDate();
+        const maxAttempts = lead.maxAttempts ?? 3;
+        const nextAttemptNumber = (lead.attempts ?? 0) + 1;
+
+        // Reset FAILED leads that are overdue
+        if (lead.status === "FAILED" && lead.attempts >= maxAttempts) {
+          await prisma.lead.update({
+            where: { id: lead.id },
+            data: { attempts: 0, status: "SCHEDULED" },
+          });
+        }
+
+        try {
+          await prisma.$transaction([
+            prisma.callAttempt.update({
+              where: { id: attempt.id },
+              data: { scheduledAt, attemptNumber: nextAttemptNumber },
+            }),
+            prisma.lead.update({
+              where: { id: lead.id },
+              data: {
+                status: "SCHEDULED",
+                attempts: (lead.attempts ?? 0) + 1,
+                nextScheduledAt: scheduledAt,
+              },
+            }),
+          ]);
+
+          console.log(
+            `Successfully rescheduled lead ${lead.id} to ${moment(scheduledAt)
+              .tz(tz)
+              .format("YYYY-MM-DD HH:mm:ss z")} (tz=${tz})`
+          );
+        } catch (err) {
+          console.error(`Failed to reschedule lead ${lead.id}: ${err.message}`);
+        }
+      }
+      continue;
+    }
+
+    // Sort group by previous scheduledAt
+    group.sort(
+      (a, b) =>
+        new Date(a.attempt.scheduledAt) - new Date(b.attempt.scheduledAt)
+    );
+
+    let dayIndex = 0;
+
+    for (const { attempt, lead } of group) {
+      const tz = pickTz(lead.timezone);
+      let slot = moment.unix(nextUnix).tz(tz);
+
+      const endCap = slot.clone().hour(END).minute(0).second(0).millisecond(0);
+
       const stagger = dayIndex * 300; // seconds
       const cand = slot.clone().add(stagger, "seconds");
       slot = cand.isSameOrBefore(endCap) ? cand : endCap; // clamp
+
       dayIndex += 1;
-    } else {
-      dayIndex = 0; // reset for next day
-    }
 
-    const scheduledAt = slot.toDate();
-    const maxAttempts = lead.maxAttempts ?? 3;
-    const nextAttemptNumber = (attempt.attemptNumber ?? 0) + 1;
+      const scheduledAt = slot.toDate();
+      const maxAttempts = lead.maxAttempts ?? 3;
+      const nextAttemptNumber = (lead.attempts ?? 0) + 1;
 
-    // Reset FAILED leads that are overdue
-    if (lead.status === "FAILED" && lead.attempts >= maxAttempts) {
-      await prisma.lead.update({
-        where: { id: lead.id },
-        data: { attempts: 0, status: "SCHEDULED" },
-      });
-    }
-
-    try {
-      await prisma.$transaction([
-        prisma.callAttempt.update({
-          where: { id: attempt.id },
-          data: { scheduledAt, attemptNumber: nextAttemptNumber },
-        }),
-        prisma.lead.update({
+      // Reset FAILED leads that are overdue
+      if (lead.status === "FAILED" && lead.attempts >= maxAttempts) {
+        await prisma.lead.update({
           where: { id: lead.id },
-          data: {
-            status: "SCHEDULED",
-            attempts: (lead.attempts ?? 0) + 1,
-            nextScheduledAt: scheduledAt,
-          },
-        }),
-      ]);
+          data: { attempts: 0, status: "SCHEDULED" },
+        });
+      }
 
-      console.log(
-        `Successfully rescheduled lead ${lead.id} to ${moment(scheduledAt)
-          .tz(tz)
-          .format("YYYY-MM-DD HH:mm:ss z")} (tz=${tz})`
-      );
-    } catch (err) {
-      console.error(`Failed to reschedule lead ${lead.id}: ${err.message}`);
+      try {
+        await prisma.$transaction([
+          prisma.callAttempt.update({
+            where: { id: attempt.id },
+            data: { scheduledAt, attemptNumber: nextAttemptNumber },
+          }),
+          prisma.lead.update({
+            where: { id: lead.id },
+            data: {
+              status: "SCHEDULED",
+              attempts: (lead.attempts ?? 0) + 1,
+              nextScheduledAt: scheduledAt,
+            },
+          }),
+        ]);
+
+        console.log(
+          `Successfully rescheduled lead ${lead.id} to ${moment(scheduledAt)
+            .tz(tz)
+            .format("YYYY-MM-DD HH:mm:ss z")} (tz=${tz})`
+        );
+      } catch (err) {
+        console.error(`Failed to reschedule lead ${lead.id}: ${err.message}`);
+      }
     }
   }
 }
