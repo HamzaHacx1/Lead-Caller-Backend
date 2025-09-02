@@ -48,17 +48,15 @@ export async function findNextSlot(startUnix, endUnix, tz) {
   );
 
   for (const time of scheduledTimes) {
-    // If overlapping within min gap, hop to just after that slot
     if (time <= nextSlot && time + minGapSeconds > nextSlot) {
       nextSlot = time + minGapSeconds;
     }
   }
 
-  // Ensure slot is within window and not on weekend
+  // Weekend skip
   const slotMoment = moment.unix(nextSlot).tz(tz);
-  const weekday = slotMoment.day(); // 0 Sun ... 6 Sat
+  const weekday = slotMoment.day();
   if (weekday === 0 || weekday === 6) {
-    // Weekend: move to next weekday at START
     let nextDay = slotMoment
       .clone()
       .add(1, "day")
@@ -73,9 +71,9 @@ export async function findNextSlot(startUnix, endUnix, tz) {
     return findNextSlot(nextStart, nextEnd, tz);
   }
 
+  // After hours skip
   const hour = slotMoment.hour();
   if (nextSlot > endUnix || hour < START || hour >= END) {
-    // After hours: go to next day START (skip weekends)
     let nextDay = slotMoment
       .clone()
       .add(1, "day")
@@ -107,7 +105,7 @@ r.post("/facebook", async (req, res) => {
       ignoreWindow = false,
     } = req.body || {};
 
-    // Input validation + sanitize
+    // Input validation
     if (!full_name || !phone) {
       return res
         .status(400)
@@ -146,31 +144,26 @@ r.post("/facebook", async (req, res) => {
       }
     }
 
-    // Lead tz (validated)
     const tzForLead = pickTz(timezone) || process.env.DEFAULT_TZ || QUEBEC_TZ;
 
-    // Determine schedule time
+    // Scheduling
     let scheduledUnix;
     if (forceNow || ignoreWindow) {
-      scheduledUnix = nowUnix + 120; // 2 min from now
+      scheduledUnix = nowUnix + 120;
     } else {
-      // Build today's window in lead tz and base "inside window now" off that,
-      // not off nextInsideWindowUnix (which can be in the future).
       const { start, end, now } = todayWindow(tzForLead);
       const insideNow = now.isSameOrAfter(start) && now.isBefore(end);
 
-      let startUnix = await nextInsideWindowUnix(tzForLead); // next valid slot start
+      let startUnix = await nextInsideWindowUnix(tzForLead);
       let endUnix = startUnix + WINDOW_LEN_SECS;
 
-      // If we are already inside window, let’s aim 2 min from now
       const targetUnix = insideNow ? now.add(2, "minutes").unix() : startUnix;
-
       scheduledUnix = await findNextSlot(targetUnix, endUnix, tzForLead);
     }
 
     const scheduledAt = new Date(scheduledUnix * 1000);
 
-    // Create lead + initial attempt
+    // Create lead
     const lead = await prisma.lead.create({
       data: {
         fbLeadId: fbLeadId || null,
@@ -180,9 +173,29 @@ r.post("/facebook", async (req, res) => {
         timezone: tzForLead,
         status: "SCHEDULED",
         metadata,
-        callAttempts: {
-          create: { attemptNumber: 1, status: "SCHEDULED", scheduledAt },
-        },
+      },
+    });
+
+    // Ensure attempt #1 exists or is updated
+    await prisma.callAttempt.upsert({
+      where: {
+        leadId_attemptNumber: { leadId: lead.id, attemptNumber: 1 },
+      },
+      create: {
+        leadId: lead.id,
+        attemptNumber: 1,
+        status: "SCHEDULED",
+        scheduledAt,
+      },
+      update: { scheduledAt },
+    });
+
+    // Update lead with attempt count
+    await prisma.lead.update({
+      where: { id: lead.id },
+      data: {
+        attempts: 1,
+        lastAttemptAt: scheduledAt,
       },
     });
 
@@ -215,12 +228,6 @@ r.post("/facebook", async (req, res) => {
               html,
               text: `Salut 👋\n\nTu viens de remplir notre formulaire 🙌\nBonne nouvelle : finalise ton inscription ici : ${process.env.DASHBOARD_URL}/complete-profile\n\nÀ bientôt !`,
             })
-              .then(() =>
-                console.log(`[INTAKE] email sent to ${sanitizedEmail}`)
-              )
-              .catch((err) =>
-                console.error("[INTAKE] sendEmail failed:", err.message)
-              )
           );
         }
 
@@ -229,13 +236,9 @@ r.post("/facebook", async (req, res) => {
             to: sanitizedPhone,
             body: `T’as commencé ton inscription, mais ton profil est incomplet. On t’a renvoyé le courriel. Pense à vérifier les spams si jamais.`,
           })
-            .then(() => console.log(`[INTAKE] SMS sent to ${sanitizedPhone}`))
-            .catch((err) =>
-              console.error("[INTAKE] sendSMS failed:", err.message)
-            )
         );
 
-        // Immediate outbound call if conditions allow
+        // Outbound call if allowed
         const { start, end, now } = todayWindow(tzForLead);
         const insideNow = now.isSameOrAfter(start) && now.isBefore(end);
         const vmFlag =
@@ -252,15 +255,6 @@ r.post("/facebook", async (req, res) => {
               attemptNumber: 1,
               variables,
             })
-              .then(() =>
-                console.log("[INTAKE] immediate call triggered", {
-                  leadId: lead.id,
-                  scheduledUnix,
-                })
-              )
-              .catch((err) =>
-                console.error("[INTAKE] callOutbound failed:", err.message)
-              )
           );
         }
 

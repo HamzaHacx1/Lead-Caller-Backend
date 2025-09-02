@@ -102,6 +102,7 @@ model CallAttempt {
   lead          Lead        @relation(fields: [leadId], references: [id], onDelete: Cascade)
   // Back-relation for the 1:1 link from Conversation.callAttemptId
   conversation  Conversation? @relation("CallAttemptToConversation")
+@@unique([leadId, attemptNumber])
 
   @@index([leadId])
   @@index([scheduledAt])

@@ -294,20 +294,27 @@ r.post("/elevenlabs", async (req, res) => {
       }
 
       /** ---------- Update attempt & lead ---------- */
-      let attempt = await prisma.callAttempt.findFirst({
+      const lastAttempt = await prisma.callAttempt.findFirst({
         where: { leadId: lead.id },
-        orderBy: { createdAt: "desc" },
+        orderBy: { attemptNumber: "desc" },
       });
-      if (!attempt) {
-        attempt = await prisma.callAttempt.create({
-          data: {
+      const nextAttemptNumber = (lastAttempt?.attemptNumber ?? 0) + 1;
+
+      let attempt = await prisma.callAttempt.upsert({
+        where: {
+          leadId_attemptNumber: {
             leadId: lead.id,
-            attemptNumber: (lead.attempts || 0) + 1,
-            status: "SCHEDULED",
-            scheduledAt: new Date(),
+            attemptNumber: nextAttemptNumber,
           },
-        });
-      }
+        },
+        create: {
+          leadId: lead.id,
+          attemptNumber: nextAttemptNumber,
+          status: "SCHEDULED",
+          scheduledAt: new Date(),
+        },
+        update: {}, // do nothing if already exists
+      });
 
       await prisma.callAttempt.update({
         where: { id: attempt.id },
@@ -323,7 +330,13 @@ r.post("/elevenlabs", async (req, res) => {
         },
       });
 
-      const attemptsCount = (lead.attempts || 0) + 1;
+      // Derive attemptsCount from DB instead of lead.attempts
+      const latest = await prisma.callAttempt.findFirst({
+        where: { leadId: lead.id },
+        orderBy: { attemptNumber: "desc" },
+      });
+      const attemptsCount = latest?.attemptNumber ?? 0;
+
       await prisma.lead.update({
         where: { id: lead.id },
         data: {
@@ -379,13 +392,22 @@ r.post("/elevenlabs", async (req, res) => {
         const scheduledUnix = nextDayInsideWindowUnix(
           lead.timezone || QUEBEC_TZ
         );
-        await prisma.callAttempt.create({
-          data: {
+        await prisma.callAttempt.upsert({
+          where: {
+            leadId_attemptNumber: {
+              leadId: lead.id,
+              attemptNumber: attemptsCount + 1,
+            },
+          },
+          create: {
             leadId: lead.id,
             attemptNumber: attemptsCount + 1,
             status: "SCHEDULED",
             scheduledAt: new Date(scheduledUnix * 1000),
             payload: { schedule_reason: outcome, hangup_on_voicemail: true },
+          },
+          update: {
+            scheduledAt: new Date(scheduledUnix * 1000), // reschedule if already exists
           },
         });
       }
@@ -442,36 +464,47 @@ r.post("/elevenlabs", async (req, res) => {
       });
     }
 
-    let attempt = await prisma.callAttempt.findFirst({
+    const lastAttempt = await prisma.callAttempt.findFirst({
       where: { leadId: lead.id },
-      orderBy: { createdAt: "desc" },
+      orderBy: { attemptNumber: "desc" },
     });
-    if (!attempt) {
-      attempt = await prisma.callAttempt.create({
-        data: {
-          leadId: lead.id,
-          attemptNumber: (lead.attempts || 0) + 1,
-          status: "SCHEDULED",
-          scheduledAt: new Date(),
-        },
-      });
-    }
+    const nextAttemptNumber = (lastAttempt?.attemptNumber ?? 0) + 1;
 
-    await prisma.callAttempt.update({
-      where: { id: attempt.id },
-      data: {
+    const attempt = await prisma.callAttempt.upsert({
+      where: {
+        leadId_attemptNumber: {
+          leadId: lead.id,
+          attemptNumber: nextAttemptNumber,
+        },
+      },
+      create: {
+        leadId: lead.id,
+        attemptNumber: nextAttemptNumber,
         status: outcome,
-        startedAt: startedAt || attempt.startedAt,
+        scheduledAt: new Date(),
+        startedAt: startedAt || null,
         endedAt: endedAt || new Date(),
-        conversationId:
-          body.conversation_id || body.id || attempt.conversationId,
-        recordingUrl: recordingUrl || attempt.recordingUrl || null,
-        transcript: transcriptStr ?? attempt.transcript ?? null,
+        conversationId: convoId,
+        recordingUrl,
+        transcript: transcriptStr,
+        payload: body,
+      },
+      update: {
+        status: outcome,
+        startedAt: startedAt || undefined,
+        endedAt: endedAt || new Date(),
+        conversationId: convoId,
+        recordingUrl,
+        transcript: transcriptStr,
         payload: body,
       },
     });
 
-    const attemptsCount = (lead.attempts || 0) + 1;
+    const latest = await prisma.callAttempt.findFirst({
+      where: { leadId: lead.id },
+      orderBy: { attemptNumber: "desc" },
+    });
+    const attemptsCount = latest?.attemptNumber ?? 0;
     await prisma.lead.update({
       where: { id: lead.id },
       data: {
@@ -537,13 +570,22 @@ r.post("/elevenlabs", async (req, res) => {
       attemptsCount < 3
     ) {
       const scheduledUnix = nextDayInsideWindowUnix(lead.timezone || QUEBEC_TZ);
-      await prisma.callAttempt.create({
-        data: {
+      await prisma.callAttempt.upsert({
+        where: {
+          leadId_attemptNumber: {
+            leadId: lead.id,
+            attemptNumber: attemptsCount + 1,
+          },
+        },
+        create: {
           leadId: lead.id,
           attemptNumber: attemptsCount + 1,
           status: "SCHEDULED",
           scheduledAt: new Date(scheduledUnix * 1000),
           payload: { schedule_reason: outcome, hangup_on_voicemail: true },
+        },
+        update: {
+          scheduledAt: new Date(scheduledUnix * 1000), // reschedule if duplicate
         },
       });
     }

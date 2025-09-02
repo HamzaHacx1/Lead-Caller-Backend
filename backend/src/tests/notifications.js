@@ -7,15 +7,11 @@ import {
   handleAttemptNotifications,
   handleQuickAttemptNotifications,
 } from "../lib/notifications.js";
-import {
-  pickTz,
-  nextDayInsideWindowUnix,
-  nextInsideWindowUnix,
-} from "../lib/schedule.js";
 import { renderTemplate } from "../helpers/renderTemplates.js";
 import { sendEmail, sendSMS } from "../helpers/notify.js";
 import { callOutbound } from "../lib/elevenlabs.js";
 import { QUEBEC_TZ } from "../lib/quebecTime.js";
+import { pickTz } from "../lib/schedule.js";
 
 const prisma = new PrismaClient();
 const r = Router();
@@ -87,18 +83,16 @@ r.post("/test-flow", async (req, res) => {
       ? handleQuickAttemptNotifications
       : handleAttemptNotifications;
 
+    // ---------------- SIMULATION BRANCH ----------------
     if (simulate) {
-      // Run simulation in background
       async function simulateFlow() {
         let attemptNumber = 1;
         const outcomesArray = Array.isArray(outcomes) ? outcomes : [outcomes];
 
         for (const outcome of outcomesArray) {
-          // Delay between attempts (2 min initial, 15 min subsequent)
           const delayMs = attemptNumber === 1 ? 120 * 1000 : 15 * 60 * 1000;
           await new Promise((resolve) => setTimeout(resolve, delayMs));
 
-          // Initial notifications for first attempt
           if (attemptNumber === 1) {
             try {
               if (sanitizedEmail) {
@@ -124,27 +118,39 @@ r.post("/test-flow", async (req, res) => {
             }
           }
 
-          // Simulate outcome
-          const currentLead = await prisma.lead.findUnique({
-            where: { id: lead.id },
-            include: { callAttempts: true },
-          });
-          const attempt = currentLead.callAttempts.find(
-            (a) => a.attemptNumber === attemptNumber && a.status === "SCHEDULED"
-          );
-
-          if (!attempt) continue;
-
-          await prisma.callAttempt.update({
-            where: { id: attempt.id },
-            data: {
+          // Upsert attempt with simulated outcome
+          await prisma.callAttempt.upsert({
+            where: {
+              leadId_attemptNumber: {
+                leadId: lead.id,
+                attemptNumber,
+              },
+            },
+            create: {
+              leadId: lead.id,
+              attemptNumber,
+              status: outcome,
+              scheduledAt: new Date(),
+              startedAt: new Date(),
+              endedAt: new Date(),
+              transcript: "Simulated transcript for test",
+              recordingUrl: "simulated-url",
+            },
+            update: {
               status: outcome,
               startedAt: new Date(),
               endedAt: new Date(),
-              transcript: " Simulated transcript for test",
+              transcript: "Simulated transcript for test",
               recordingUrl: "simulated-url",
             },
           });
+
+          // Update lead with latest attempt count
+          const latest = await prisma.callAttempt.findFirst({
+            where: { leadId: lead.id },
+            orderBy: { attemptNumber: "desc" },
+          });
+          const attemptsCount = latest?.attemptNumber ?? attemptNumber;
 
           await prisma.lead.update({
             where: { id: lead.id },
@@ -152,28 +158,33 @@ r.post("/test-flow", async (req, res) => {
               status: outcome,
               lastOutcome: outcome,
               lastAttemptAt: new Date(),
-              attempts: attemptNumber,
+              attempts: attemptsCount,
             },
           });
 
           // Trigger notifications
-          await handler({
-            lead: currentLead,
-            attemptNumber,
-            outcome,
-          });
+          await handler({ lead, attemptNumber, outcome });
 
-          // Schedule retry if applicable
+          // Retry scheduling
           if (retryable.includes(outcome) && attemptNumber < 3) {
             const nextScheduledUnix = moment()
               .tz(tzForLead)
               .add(15, "minutes")
               .unix();
-            await prisma.callAttempt.create({
-              data: {
+            await prisma.callAttempt.upsert({
+              where: {
+                leadId_attemptNumber: {
+                  leadId: lead.id,
+                  attemptNumber: attemptNumber + 1,
+                },
+              },
+              create: {
                 leadId: lead.id,
                 attemptNumber: attemptNumber + 1,
                 status: "SCHEDULED",
+                scheduledAt: new Date(nextScheduledUnix * 1000),
+              },
+              update: {
                 scheduledAt: new Date(nextScheduledUnix * 1000),
               },
             });
@@ -186,8 +197,10 @@ r.post("/test-flow", async (req, res) => {
       simulateFlow().catch((e) =>
         console.error("[TEST-FLOW] Simulation error:", e)
       );
-    } else {
-      // Actual flow with calls
+    }
+
+    // ---------------- ACTUAL FLOW BRANCH ----------------
+    else {
       async function actualFlow() {
         let attemptNumber = 1;
 
@@ -195,7 +208,6 @@ r.post("/test-flow", async (req, res) => {
           const delayMs = attemptNumber === 1 ? 120 * 1000 : 15 * 60 * 1000;
           await new Promise((resolve) => setTimeout(resolve, delayMs));
 
-          // Initial notifications for first attempt
           if (attemptNumber === 1) {
             try {
               if (sanitizedEmail) {
@@ -229,7 +241,6 @@ r.post("/test-flow", async (req, res) => {
           const attempt = currentLead.callAttempts.find(
             (a) => a.attemptNumber === attemptNumber && a.status === "SCHEDULED"
           );
-
           if (!attempt) break;
 
           // Trigger actual call
@@ -240,10 +251,10 @@ r.post("/test-flow", async (req, res) => {
             variables: {},
           });
 
-          // Wait for call completion and webhook (5 min)
+          // Wait 5 minutes for webhook update
           await new Promise((resolve) => setTimeout(resolve, 5 * 60 * 1000));
 
-          // Fetch updated lead and outcome
+          // Fetch updated lead + attempt
           const updatedLead = await prisma.lead.findUnique({
             where: { id: lead.id },
             include: { callAttempts: true },
@@ -251,27 +262,49 @@ r.post("/test-flow", async (req, res) => {
           const updatedAttempt = updatedLead.callAttempts.find(
             (a) => a.attemptNumber === attemptNumber
           );
-          const outcome = updatedAttempt.status;
+          const outcome = updatedAttempt?.status || "FAILED";
+
+          // Update lead with latest attempt count
+          const latest = await prisma.callAttempt.findFirst({
+            where: { leadId: lead.id },
+            orderBy: { attemptNumber: "desc" },
+          });
+          const attemptsCount = latest?.attemptNumber ?? attemptNumber;
+
+          await prisma.lead.update({
+            where: { id: lead.id },
+            data: {
+              status: outcome,
+              lastOutcome: outcome,
+              lastAttemptAt: new Date(),
+              attempts: attemptsCount,
+            },
+          });
 
           // Trigger notifications
-          await handler({
-            lead: updatedLead,
-            attemptNumber,
-            outcome,
-          });
+          await handler({ lead: updatedLead, attemptNumber, outcome });
 
           if (!retryable.includes(outcome) || attemptNumber >= 3) break;
 
-          // Schedule next attempt in 15 min
+          // Retry scheduling
           const nextScheduledUnix = moment()
             .tz(tzForLead)
             .add(15, "minutes")
             .unix();
-          await prisma.callAttempt.create({
-            data: {
+          await prisma.callAttempt.upsert({
+            where: {
+              leadId_attemptNumber: {
+                leadId: lead.id,
+                attemptNumber: attemptNumber + 1,
+              },
+            },
+            create: {
               leadId: lead.id,
               attemptNumber: attemptNumber + 1,
               status: "SCHEDULED",
+              scheduledAt: new Date(nextScheduledUnix * 1000),
+            },
+            update: {
               scheduledAt: new Date(nextScheduledUnix * 1000),
             },
           });
