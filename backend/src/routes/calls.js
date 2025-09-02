@@ -2,7 +2,15 @@ import { PrismaClient } from "@prisma/client";
 // routes/calls.js
 import { Router } from "express";
 
-import { callOutbound } from "../lib/callOutbound.js"; // your code above
+import { callOutbound } from "../lib/elevenlabs.js"; // your code above
+
+// your code above
+
+// your code above
+
+// your code above
+
+// your code above
 
 const prisma = new PrismaClient();
 const r = Router();
@@ -34,7 +42,7 @@ function requireBearer(req, res, next) {
  *   "metadata": { "source": "fb_lead_ads" }    // optional
  * }
  */
-r.post("/calls/outbound", requireBearer, async (req, res) => {
+r.post("/calls/outbound", async (req, res) => {
   try {
     const {
       to,
