@@ -15,6 +15,7 @@ import authRoutes from "./routes/auth.js";
 import { setIo } from "./lib/realtime.js";
 import intake from "./routes/intake.js";
 import sms from "./routes/sms.js";
+import n8n from "./routes/calls";
 
 const app = express();
 
@@ -85,6 +86,7 @@ app.use("/metrics", metrics);
 app.use("/auth", authRoutes);
 app.use("/sms", sms);
 app.use("/test", testApi);
+app.use("/n8n", n8n);
 // --- HTTP + Socket.IO ---
 const server = http.createServer(app);
 const io = new SocketIOServer(server, {
