@@ -14,8 +14,8 @@ import metrics from "./routes/metrics.js";
 import authRoutes from "./routes/auth.js";
 import { setIo } from "./lib/realtime.js";
 import intake from "./routes/intake.js";
+import n8n from "./routes/calls.js";
 import sms from "./routes/sms.js";
-import n8n from "./routes/calls";
 
 const app = express();
 
