@@ -1,3 +1,19 @@
+import fetch from "node-fetch";
+
+// ElevenLabs single outbound call endpoint
+export const EL_API =
+  "https://api.elevenlabs.io/v1/convai/twilio/outbound-call";
+
+/**
+ * Initiate an outbound call (single call) with optional forced webhook.
+ * Accepts:
+ *   to: E.164 phone
+ *   lead: { id, fullName, email, timezone, scheduledUnix }
+ *   attemptNumber: int
+ *   variables: {} (dynamic variables for your agent)
+ */
+// ...imports unchanged...
+
 export async function callOutbound({
   to,
   lead,
