@@ -1,19 +1,3 @@
-import fetch from "node-fetch";
-
-// ElevenLabs single outbound call endpoint
-export const EL_API =
-  "https://api.elevenlabs.io/v1/convai/twilio/outbound-call";
-
-/**
- * Initiate an outbound call (single call) with optional forced webhook.
- * Accepts:
- *   to: E.164 phone
- *   lead: { id, fullName, email, timezone, scheduledUnix }
- *   attemptNumber: int
- *   variables: {} (dynamic variables for your agent)
- */
-// ...imports unchanged...
-
 export async function callOutbound({
   to,
   lead,
@@ -21,14 +5,18 @@ export async function callOutbound({
   variables = {},
   metadata = {},
 }) {
-  const scheduled_time_unix = lead.scheduledUnix;
+  // Prefer provided scheduledUnix, else convert scheduledAt Date → unix
+  const scheduled_time_unix =
+    lead.scheduledUnix ??
+    (lead.scheduledAt
+      ? Math.floor(new Date(lead.scheduledAt).getTime() / 1000)
+      : null);
 
   const body = {
     agent_id: process.env.EL_AGENT_ID,
     agent_phone_number_id: process.env.EL_PHONE_ID,
     to_number: to,
     scheduled_time_unix,
-    // Anything in metadata is echoed back in post-call webhooks
     metadata: {
       lead_id: lead.id,
       email: lead.email || null,
@@ -36,7 +24,6 @@ export async function callOutbound({
       timezone: lead.timezone,
       ...metadata,
     },
-    // You can also mirror email here if your agent uses variables
     variables: {
       email: lead.email || null,
       ...variables,
@@ -75,5 +62,6 @@ export async function callOutbound({
     webhookId: process.env.EL_WEBHOOK_ID || null,
     conversation_id,
   });
+
   return { scheduled_time_unix, conversation_id };
 }
