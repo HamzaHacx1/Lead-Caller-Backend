@@ -1,45 +1,36 @@
-import { PrismaClient } from "@prisma/client";
+// routes/webhooks.elevenlabs.js
 import { Router } from "express";
 import fetch from "node-fetch";
 import crypto from "crypto";
 
-import {
-  nextInsideWindowUnix,
-  nextDayInsideWindowUnix,
-  START,
-  END,
-  pickTz,
-} from "../lib/schedule.js";
-import { nowIn, formatInQuebec, QUEBEC_TZ } from "../lib/quebecTime.js";
-import { handleAttemptNotifications } from "../lib/notifications.js";
-
-const prisma = new PrismaClient();
 const r = Router();
 
-/** ---------- HMAC verify ---------- */
+/** ---------- HMAC verify (ElevenLabs) ---------- */
 function verifyHmac(req) {
   const secret = process.env.EL_WEBHOOK_SECRET || "";
   const header = req.headers["elevenlabs-signature"] || "";
-  if (!secret || !header || !req.rawBody) return false;
+  const rawBody = req.rawBody;
+  if (!secret || !header || !rawBody) return false;
 
+  // header example: "t=1699999999, v0=sha256=ABCDEF..."
   const parts = Object.fromEntries(
     header.split(",").map((s) => {
       const [k, ...rest] = s.trim().split("=");
       return [k, rest.join("=")];
     })
   );
+
   const t = parts.t;
   let v0 = parts.v0 || "";
   if (!t || !v0) return false;
-
   if (v0.startsWith("sha256=")) v0 = v0.slice("sha256=".length);
-  v0 = v0.trim().toLowerCase();
 
+  // accept ±30 min clock skew
   const now = Math.floor(Date.now() / 1000);
   const ts = parseInt(t, 10);
   if (!Number.isFinite(ts) || Math.abs(now - ts) > 30 * 60) return false;
 
-  const payload = `${t}.${req.rawBody.toString("utf8")}`;
+  const payload = `${t}.${rawBody.toString("utf8")}`;
   const hex = crypto.createHmac("sha256", secret).update(payload).digest("hex");
 
   try {
@@ -52,10 +43,10 @@ function verifyHmac(req) {
   }
 }
 
-/** ---------- utils ---------- */
+/** ---------- tiny helpers ---------- */
 function normPhone(p) {
   if (!p) return null;
-  const digits = String(p).replace(/[^\d+]/g, "");
+  const digits = String(p).replace(/[^\d+0-9]/g, "");
   if (digits.startsWith("+")) return digits;
   if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
   if (digits.length === 10) return `+1${digits}`;
@@ -68,8 +59,8 @@ function mapOutcomeFromTranscription(data) {
     cs === true ||
     String(cs).toLowerCase() === "true" ||
     String(cs).toLowerCase() === "success";
-  const term = String(data.metadata?.termination_reason || "").toLowerCase();
 
+  const term = String(data.metadata?.termination_reason || "").toLowerCase();
   if (success) return "ANSWERED";
   if (term.includes("voicemail")) return "VOICEMAIL";
   if (
@@ -101,15 +92,16 @@ function pickDataCollections(d) {
   };
 }
 
-/** ---------- POST to external backend (3 tries) ---------- */
-async function postToExternal(payload) {
+/** ---------- POST to external backend (with simple retries) ---------- */
+async function postToCRM(payload) {
   const url = process.env.CRM_ENDPOINT;
-  if (!url) return;
-
+  if (!url) {
+    console.warn("[CRM] CRM_ENDPOINT not set; skipping post");
+    return;
+  }
   const headers = { "Content-Type": "application/json" };
-
-  let attempt = 0;
-  let delay = 500;
+  let attempt = 0,
+    delay = 600;
   while (attempt < 3) {
     try {
       const res = await fetch(url, {
@@ -117,14 +109,11 @@ async function postToExternal(payload) {
         headers,
         body: JSON.stringify(payload),
       });
-      if (res.ok) {
-        console.log("[CRM] posted ok");
-        return;
-      }
+      if (res.ok) return;
       const txt = await res.text().catch(() => "");
-      console.warn("[CRM] post failed", res.status, txt);
+      console.warn(`[CRM] post failed ${res.status}`, txt?.slice(0, 200));
     } catch (e) {
-      console.warn("[CRM] error", e.message);
+      console.warn("[CRM] error", e?.message);
     }
     attempt++;
     await new Promise((r) => setTimeout(r, delay));
@@ -132,18 +121,15 @@ async function postToExternal(payload) {
   }
 }
 
-/** ---------- Route ---------- */
+/** ------------------------------------------------------------------
+ *  Webhook: DB-FREE — authenticate, normalize, forward to CRM
+ *  Accepts:
+ *   - New style: { type: "post_call_transcription", data: {...} }
+ *   - Old/flat style for backward compatibility
+ *  Responds 200 quickly (EL expects 2xx).
+ * ------------------------------------------------------------------*/
 r.post("/elevenlabs", async (req, res) => {
   try {
-    const qcNow = nowIn(QUEBEC_TZ);
-    console.log("[WEBHOOK]", {
-      sig: req.headers["elevenlabs-signature"],
-      rawLen: req.rawBody?.length,
-      type: req.body?.type,
-      quebecNow: qcNow.format("YYYY-MM-DD HH:mm:ss z"),
-      window: `${START}:00–${END}:00`,
-    });
-
     const disableAuth = process.env.DISABLE_WEBHOOK_AUTH === "1";
     const debugBypass =
       (req.headers["x-debug-pass"] || "") === (process.env.API_KEY || "");
@@ -152,452 +138,175 @@ r.post("/elevenlabs", async (req, res) => {
       (req.headers["x-webhook-secret"] || "") ===
       (process.env.EL_WEBHOOK_SECRET || "");
 
-    console.log("[WEBHOOK] auth:", {
-      hasValidHmac,
-      staticOk,
-      disableAuth,
-      debugBypass,
-    });
-
     if (!disableAuth && !debugBypass && !hasValidHmac && !staticOk) {
+      // Return 200 to avoid EL retries/noise, but do nothing.
       return res
         .status(200)
-        .json({ ok: true, note: "invalid_signature_ignored_for_debug" });
+        .json({ ok: true, note: "invalid_signature_ignored" });
     }
 
-    const body = req.body || {};
-    let outcome = "FAILED";
-    let convoId = body.conversation_id || body.id || null;
+    const body =
+      req.body && typeof req.body === "string"
+        ? JSON.parse(req.body) // if raw body slipped through as string
+        : req.body || {};
 
-    let transcriptArr = null;
-    let transcriptStr = null;
-    let recordingUrl = null;
-    let startedAt = null;
-    let endedAt = null;
+    let crmPayload = null;
 
-    let leadId = null;
-    let emailFromMeta = null;
-    let from_number = null;
-    let to_number = null;
-
-    let costCents = null;
-    let durationSecs = null;
-    let summary = null;
-    let title = null;
-    let termination = null;
-
-    /** ---------- New EL structured payloads ---------- */
+    /** ---------- New structured payload ---------- */
     if (body.type === "post_call_transcription" && body.data) {
       const d = body.data;
-      outcome = mapOutcomeFromTranscription(d);
 
-      const m = d.metadata || {};
-      const pc = m.phone_call || {};
+      const outcome = mapOutcomeFromTranscription(d);
+      const meta = d.metadata || {};
+      const pc = meta.phone_call || {};
 
-      from_number =
+      // Numbers as seen by EL
+      const from_number = normPhone(
         pc.external_number ||
-        m.from_number ||
-        m.caller_number ||
-        m.user_number ||
-        null;
-      to_number =
+          meta.from_number ||
+          meta.caller_number ||
+          meta.user_number
+      );
+      const to_number = normPhone(
         pc.agent_number ||
-        m.to_number ||
-        m.phone_number ||
-        m.agent_number ||
-        null;
+          meta.to_number ||
+          meta.phone_number ||
+          meta.agent_number
+      );
 
+      // Dynamic variables (from your /calls/outbound -> callOutbound)
       const dyn =
         d.conversation_initiation_client_data?.dynamic_variables || {};
-      const sysCalled = dyn.system__called_number || null;
-      const sysCaller = dyn.system__caller_id || null;
+      const leadId = Number(dyn.lead_id) || Number(meta.lead_id) || null;
+      const email = meta.email || dyn.lead_email || null;
+      const fullName = dyn.lead_full_name || meta.full_name || null;
+      const phoneGuess =
+        normPhone(dyn.lead_phone) || from_number || meta.caller_number || null;
 
-      const candidateLeadPhones = [from_number, sysCaller, m.caller_number]
-        .map(normPhone)
-        .filter(Boolean);
-
-      from_number = normPhone(from_number) || normPhone(sysCaller);
-      to_number = normPhone(to_number) || normPhone(sysCalled);
-
-      emailFromMeta = m.email || null;
-      leadId = Number(dyn.lead_id) || Number(m.lead_id) || null;
-
-      startedAt = m.started_at ? new Date(m.started_at) : null;
-      endedAt = m.ended_at ? new Date(m.ended_at) : new Date();
-      transcriptArr = Array.isArray(d.transcript) ? d.transcript : null;
-      transcriptStr = transcriptArr ? JSON.stringify(transcriptArr) : null;
+      const transcriptArr = Array.isArray(d.transcript) ? d.transcript : null;
+      let transcriptStr = transcriptArr ? JSON.stringify(transcriptArr) : null;
       if (transcriptStr && transcriptStr.length > 500_000) {
         transcriptStr = transcriptStr.slice(0, 500_000);
       }
-      recordingUrl = d.recording_url || d.audio_url || null;
 
-      costCents = Number(m.cost ?? null);
-      durationSecs = Number(m.call_duration_secs ?? null);
-      summary = d.analysis?.transcript_summary || null;
-      title = d.analysis?.call_summary_title || null;
-      termination = m.termination_reason || null;
+      const startedAt = meta.started_at ? new Date(meta.started_at) : null;
+      const endedAt = meta.ended_at ? new Date(meta.ended_at) : new Date();
 
       const dc = pickDataCollections(d);
-      const dataCollectionsRaw = d?.analysis?.data_collection_results || {};
 
-      /** ---------- Lead matching ---------- */
-      let lead = null;
-      if (leadId) {
-        lead = await prisma.lead.findUnique({ where: { id: leadId } });
-      }
-      if (!lead) {
-        for (const ph of candidateLeadPhones) {
-          const found = await prisma.lead.findFirst({
-            where: { phone: ph },
-            orderBy: { createdAt: "desc" },
-          });
-          if (found) {
-            lead = found;
-            break;
-          }
-        }
-      }
+      crmPayload = {
+        // === Core identity/context ===
+        leadId: leadId, // try to always pass this through from your outbound call
+        fullName: fullName,
+        phone: phoneGuess,
+        email: email || null,
 
-      if (!lead && process.env.AUTO_CREATE_LEAD_FROM_WEBHOOK === "1") {
-        const tz = process.env.DEFAULT_TZ || QUEBEC_TZ;
-        const phoneGuess = candidateLeadPhones[0] || from_number;
-        if (phoneGuess) {
-          lead = await prisma.lead.create({
-            data: {
-              fbLeadId: null,
-              fullName: "Inbound Lead",
-              phone: phoneGuess,
-              email: emailFromMeta || null,
-              timezone: tz,
-              status: "IN_PROGRESS",
-              metadata: { created_from: "webhook_auto" },
-            },
-          });
-        }
-      }
-      if (!lead) {
-        console.warn("[WEBHOOK] lead not found", {
-          leadId,
-          from_number,
-          to_number,
-          sysCalled,
-          sysCaller,
-        });
-        return res.status(200).json({ ok: true, note: "lead_not_found" });
-      }
-
-      if (emailFromMeta && (!lead.email || lead.email !== emailFromMeta)) {
-        await prisma.lead.update({
-          where: { id: lead.id },
-          data: { email: emailFromMeta },
-        });
-      }
-
-      /** ---------- Update attempt & lead ---------- */
-      const lastAttempt = await prisma.callAttempt.findFirst({
-        where: { leadId: lead.id },
-        orderBy: { attemptNumber: "desc" },
-      });
-      const nextAttemptNumber = (lastAttempt?.attemptNumber ?? 0) + 1;
-
-      let attempt = await prisma.callAttempt.upsert({
-        where: {
-          leadId_attemptNumber: {
-            leadId: lead.id,
-            attemptNumber: nextAttemptNumber,
-          },
-        },
-        create: {
-          leadId: lead.id,
-          attemptNumber: nextAttemptNumber,
-          status: "SCHEDULED",
-          scheduledAt: new Date(),
-        },
-        update: {}, // do nothing if already exists
-      });
-
-      await prisma.callAttempt.update({
-        where: { id: attempt.id },
-        data: {
-          status: outcome,
-          startedAt: startedAt || attempt.startedAt,
-          endedAt: endedAt || new Date(),
-          conversationId:
-            d.conversation_id || convoId || attempt.conversationId,
-          recordingUrl: recordingUrl || attempt.recordingUrl || null,
-          transcript: transcriptStr ?? attempt.transcript ?? null,
-          payload: body,
-        },
-      });
-
-      // Derive attemptsCount from DB instead of lead.attempts
-      const latest = await prisma.callAttempt.findFirst({
-        where: { leadId: lead.id },
-        orderBy: { attemptNumber: "desc" },
-      });
-      const attemptsCount = latest?.attemptNumber ?? 0;
-
-      await prisma.lead.update({
-        where: { id: lead.id },
-        data: {
-          status: outcome,
-          lastOutcome: outcome,
-          lastAttemptAt: new Date(),
-          attempts: attemptsCount,
-        },
-      });
-
-      // 🔔 Trigger attempt notifications (structured branch)
-      try {
-        if (outcome === "NO_ANSWER") {
-          await handleAttemptNotifications({
-            lead,
-            attemptNumber: attemptsCount,
-            outcome,
-          });
-        }
-      } catch (e) {
-        console.warn("[NOTIFY] attempt notifications failed", e?.message);
-      }
-
-      /** ---------- Push to external backend ---------- */
-      const crmPayload = {
-        leadId: lead.id,
-        fullName: lead.fullName,
-        phone: lead.phone,
-        email: lead.email || emailFromMeta || null,
+        // === Outcome & call meta ===
         outcome,
-        conversationId: d.conversation_id || convoId || null,
-        startedAt: (startedAt || null)?.toISOString?.() || null,
-        endedAt: (endedAt || null)?.toISOString?.() || null,
-        durationSecs: durationSecs ?? null,
-        costCents: costCents ?? null,
-        terminationReason: termination,
-        summary,
-        summaryTitle: title,
+        conversationId:
+          d.conversation_id || body.conversation_id || body.id || null,
+        startedAt: startedAt ? startedAt.toISOString() : null,
+        endedAt: endedAt ? endedAt.toISOString() : null,
+        durationSecs: Number(meta.call_duration_secs ?? null),
+        costCents: Number(meta.cost ?? null),
+        terminationReason: meta.termination_reason || null,
+
+        // === Summaries & collections ===
+        summary: d.analysis?.transcript_summary || null,
+        summaryTitle: d.analysis?.call_summary_title || null,
         availability: dc.availability,
         job_status: dc.job_status,
         salary_expectations: dc.salary_expectations,
         job_type: dc.job_type,
         job_field: dc.job_field,
-        dataCollectionsRaw,
+        dataCollectionsRaw: d?.analysis?.data_collection_results || {},
+
+        // === Transcript & raw ===
         transcript: transcriptArr || [],
         raw: body,
       };
-      postToExternal(crmPayload).catch(() => {});
+    } else {
+      /** ---------- Old/flat payload fallback ---------- */
+      const statusMap = {
+        answered: "ANSWERED",
+        voicemail: "VOICEMAIL",
+        "no-answer": "NO_ANSWER",
+        no_answer: "NO_ANSWER",
+        noanswer: "NO_ANSWER",
+        failed: "FAILED",
+      };
+      const rawOutcome = String(body.outcome || "").toLowerCase();
+      const outcome = statusMap[rawOutcome] || "FAILED";
 
-      /** ---------- Retry on FAILED/NO_ANSWER/VOICEMAIL ---------- */
-      const retryable = ["FAILED", "NO_ANSWER", "VOICEMAIL"];
-      if (retryable.includes(outcome) && attemptsCount < 3) {
-        const scheduledUnix = nextDayInsideWindowUnix(
-          lead.timezone || QUEBEC_TZ
-        );
-        await prisma.callAttempt.upsert({
-          where: {
-            leadId_attemptNumber: {
-              leadId: lead.id,
-              attemptNumber: attemptsCount + 1,
-            },
-          },
-          create: {
-            leadId: lead.id,
-            attemptNumber: attemptsCount + 1,
-            status: "SCHEDULED",
-            scheduledAt: new Date(scheduledUnix * 1000),
-            payload: { schedule_reason: outcome, hangup_on_voicemail: true },
-          },
-          update: {
-            scheduledAt: new Date(scheduledUnix * 1000), // reschedule if already exists
-          },
-        });
+      const leadId = Number(body?.metadata?.lead_id) || null;
+      const email = body?.metadata?.email || null;
+      const fullName = body?.metadata?.full_name || null;
+      const phone = normPhone(body?.metadata?.lead_phone || body?.from_number);
+
+      const transcriptArr = Array.isArray(body?.transcript)
+        ? body.transcript
+        : null;
+      let transcriptStr = transcriptArr
+        ? JSON.stringify(transcriptArr)
+        : typeof body?.transcript === "string"
+        ? body.transcript
+        : null;
+      if (transcriptStr && transcriptStr.length > 500_000) {
+        transcriptStr = transcriptStr.slice(0, 500_000);
       }
 
-      console.log("[WEBHOOK] processed:", {
-        leadId: lead.id,
+      const startedAt = body?.started_at ? new Date(body.started_at) : null;
+      const endedAt = body?.ended_at ? new Date(body.ended_at) : new Date();
+
+      const dc = body?.analysis?.data_collection_results;
+      const getDC = (key) => {
+        if (!dc) return null;
+        if (Array.isArray(dc)) {
+          return (
+            dc.find((i) => i?.key === key || i?.name === key)?.value ?? null
+          );
+        }
+        if (typeof dc === "object") {
+          return dc[key]?.value ?? dc[key] ?? null;
+        }
+        return null;
+      };
+
+      crmPayload = {
+        leadId,
+        fullName,
+        phone,
+        email,
         outcome,
-        from_number,
-        to_number,
-        attempts: attemptsCount,
-      });
-      return res.json({ ok: true });
+        conversationId: body.conversation_id || body.id || null,
+        startedAt: startedAt ? startedAt.toISOString() : null,
+        endedAt: endedAt ? endedAt.toISOString() : null,
+        durationSecs: Number(body?.call_duration_secs ?? null),
+        costCents: Number(body?.cost ?? null),
+        terminationReason: body?.termination_reason || null,
+        summary: getDC("summary"),
+        summaryTitle: getDC("summaryTitle"),
+        availability: getDC("availability"),
+        job_status: getDC("job_status"),
+        salary_expectations: getDC("salary_expectations"),
+        job_type: getDC("job_type"),
+        job_field: getDC("job_field"),
+        dataCollectionsRaw: dc || {},
+        transcript:
+          transcriptArr ||
+          (typeof body?.transcript === "string" ? body.transcript : null),
+        raw: body,
+      };
     }
 
-    /** ---------- Fallback: old flat payloads ---------- */
-    const statusMap = {
-      answered: "ANSWERED",
-      voicemail: "VOICEMAIL",
-      "no-answer": "NO_ANSWER",
-      no_answer: "NO_ANSWER",
-      noanswer: "NO_ANSWER",
-      failed: "FAILED",
-    };
-    const rawOutcome = String(body.outcome || "").toLowerCase();
-    outcome = statusMap[rawOutcome] || "FAILED";
-    to_number = normPhone(body.to_number || body.phone_number || null);
-    leadId = Number(body?.metadata?.lead_id) || null;
-    emailFromMeta = body?.metadata?.email || null;
-    transcriptArr = Array.isArray(body?.transcript) ? body.transcript : null;
-    transcriptStr = transcriptArr
-      ? JSON.stringify(transcriptArr)
-      : typeof body?.transcript === "string"
-      ? body.transcript
-      : null;
-    if (transcriptStr && transcriptStr.length > 500_000) {
-      transcriptStr = transcriptStr.slice(0, 500_000);
-    }
-    recordingUrl = body?.recording_url || null;
-    startedAt = body?.started_at ? new Date(body.started_at) : null;
-    endedAt = body?.ended_at ? new Date(body.ended_at) : new Date();
+    // Fire-and-forget to your CRM; do not block response.
+    postToCRM(crmPayload).catch(() => {});
 
-    let lead = null;
-    if (leadId) lead = await prisma.lead.findUnique({ where: { id: leadId } });
-
-    if (!lead) {
-      console.warn("[WEBHOOK] lead not found (flat)", { leadId, to_number });
-      return res.status(200).json({ ok: true, note: "lead_not_found" });
-    }
-
-    if (emailFromMeta && (!lead.email || lead.email !== emailFromMeta)) {
-      await prisma.lead.update({
-        where: { id: lead.id },
-        data: { email: emailFromMeta },
-      });
-    }
-
-    const lastAttempt = await prisma.callAttempt.findFirst({
-      where: { leadId: lead.id },
-      orderBy: { attemptNumber: "desc" },
-    });
-    const nextAttemptNumber = (lastAttempt?.attemptNumber ?? 0) + 1;
-
-    const attempt = await prisma.callAttempt.upsert({
-      where: {
-        leadId_attemptNumber: {
-          leadId: lead.id,
-          attemptNumber: nextAttemptNumber,
-        },
-      },
-      create: {
-        leadId: lead.id,
-        attemptNumber: nextAttemptNumber,
-        status: outcome,
-        scheduledAt: new Date(),
-        startedAt: startedAt || null,
-        endedAt: endedAt || new Date(),
-        conversationId: convoId,
-        recordingUrl,
-        transcript: transcriptStr,
-        payload: body,
-      },
-      update: {
-        status: outcome,
-        startedAt: startedAt || undefined,
-        endedAt: endedAt || new Date(),
-        conversationId: convoId,
-        recordingUrl,
-        transcript: transcriptStr,
-        payload: body,
-      },
-    });
-
-    const latest = await prisma.callAttempt.findFirst({
-      where: { leadId: lead.id },
-      orderBy: { attemptNumber: "desc" },
-    });
-    const attemptsCount = latest?.attemptNumber ?? 0;
-    await prisma.lead.update({
-      where: { id: lead.id },
-      data: {
-        status: outcome,
-        lastOutcome: outcome,
-        lastAttemptAt: new Date(),
-        attempts: attemptsCount,
-      },
-    });
-
-    try {
-      if (outcome === "NO_ANSWER") {
-        await handleAttemptNotifications({
-          lead,
-          attemptNumber: attemptsCount,
-          outcome,
-        });
-      }
-    } catch (e) {
-      console.warn("[NOTIFY] attempt notifications failed (flat)", e?.message);
-    }
-
-    const dc = body?.analysis?.data_collection_results;
-    function getDC(key) {
-      if (!dc) return null;
-      if (Array.isArray(dc)) {
-        return dc.find((i) => i?.key === key || i?.name === key)?.value ?? null;
-      }
-      if (typeof dc === "object") {
-        return dc[key]?.value ?? dc[key] ?? null;
-      }
-      return null;
-    }
-
-    postToExternal({
-      leadId: lead.id,
-      fullName: lead.fullName,
-      phone: lead.phone,
-      email: lead.email || emailFromMeta || null,
-      outcome,
-      conversationId: body.conversation_id || body.id || null,
-      startedAt: (startedAt || null)?.toISOString?.() || null,
-      endedAt: (endedAt || null)?.toISOString?.() || null,
-      durationSecs: null,
-      costCents: null,
-      terminationReason: null,
-      summary: getDC("summary"),
-      summaryTitle: getDC("summaryTitle"),
-      availability: getDC("availability"),
-      job_status: getDC("job_status"),
-      salary_expectations: getDC("salary_expectations"),
-      job_type: getDC("job_type"),
-      job_field: getDC("job_field"),
-      dataCollectionsRaw: dc || {},
-      transcript:
-        transcriptArr ||
-        (typeof body?.transcript === "string" ? body.transcript : null),
-      raw: body,
-    }).catch(() => {});
-
-    if (
-      ["FAILED", "NO_ANSWER", "VOICEMAIL"].includes(outcome) &&
-      attemptsCount < 3
-    ) {
-      const scheduledUnix = nextDayInsideWindowUnix(lead.timezone || QUEBEC_TZ);
-      await prisma.callAttempt.upsert({
-        where: {
-          leadId_attemptNumber: {
-            leadId: lead.id,
-            attemptNumber: attemptsCount + 1,
-          },
-        },
-        create: {
-          leadId: lead.id,
-          attemptNumber: attemptsCount + 1,
-          status: "SCHEDULED",
-          scheduledAt: new Date(scheduledUnix * 1000),
-          payload: { schedule_reason: outcome, hangup_on_voicemail: true },
-        },
-        update: {
-          scheduledAt: new Date(scheduledUnix * 1000), // reschedule if duplicate
-        },
-      });
-    }
-
-    console.log("[WEBHOOK] processed (flat):", {
-      leadId: lead.id,
-      outcome,
-      attempts: attemptsCount,
-    });
-    return res.json({ ok: true });
+    // Always respond 200 to keep EL happy
+    return res.status(200).json({ ok: true });
   } catch (e) {
-    console.error("[WEBHOOK error]", e);
+    console.error("[EL webhook] error:", e);
+    // Still return 200 to avoid EL retries; include a note for logs
     return res.status(200).json({ ok: true, note: "error_swallowed_for_el" });
   }
 });
