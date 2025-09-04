@@ -303,6 +303,26 @@ async function scheduleDelayedNotifications(lead) {
   const tz = pickTz(lead.timezone || QUEBEC_TZ);
   const now = moment().tz(tz);
 
+  // TESTING: For testing, schedule at 2-min intervals
+  const plans = [
+    { step: "ANSWERED_24H", delayMs: 2 * 60 * 1000 }, // 2 minutes
+    { step: "ANSWERED_48H", delayMs: 4 * 60 * 1000 }, // 4 minutes
+  ];
+
+  for (const p of plans) {
+    const target = now.clone().add(p.delayMs, "milliseconds").toDate();
+    await prisma.notificationEvent.create({
+      data: {
+        leadId: lead.id,
+        step: p.step,
+        scheduledAt: target, // No window clamping for testing
+        metadata: { attemptNumber: 1 },
+      },
+    });
+  }
+
+  // ORIGINAL: Comment out for testing; restore after
+  /*
   const plans = [
     { step: "ANSWERED_24H", delayMs: 24 * 60 * 60 * 1000 },
     { step: "ANSWERED_48H", delayMs: 48 * 60 * 60 * 1000 },
@@ -320,12 +340,33 @@ async function scheduleDelayedNotifications(lead) {
       },
     });
   }
+  */
 }
 
 async function scheduleQuickNotifications(lead) {
   const tz = pickTz(lead.timezone || QUEBEC_TZ);
   const now = moment().tz(tz);
 
+  // TESTING: For testing, schedule at 2-min intervals
+  const plans = [
+    { step: "ANSWERED_15M", delayMs: 2 * 60 * 1000 }, // 2 minutes
+    { step: "ANSWERED_30M", delayMs: 4 * 60 * 1000 }, // 4 minutes
+  ];
+
+  for (const p of plans) {
+    const target = now.clone().add(p.delayMs, "milliseconds").toDate();
+    await prisma.notificationEvent.create({
+      data: {
+        leadId: lead.id,
+        step: p.step,
+        scheduledAt: target, // No window clamping for testing
+        metadata: { attemptNumber: 1 },
+      },
+    });
+  }
+
+  // ORIGINAL: Comment out for testing; restore after
+  /*
   const plans = [
     { step: "ANSWERED_15M", delayMs: 15 * 60 * 1000 },
     { step: "ANSWERED_30M", delayMs: 30 * 60 * 1000 },
@@ -343,6 +384,7 @@ async function scheduleQuickNotifications(lead) {
       },
     });
   }
+  */
 }
 
 // -----------------------------------------------------------------------------
@@ -372,7 +414,50 @@ export async function handleAttemptNotifications({
     return;
   }
 
-  // NO_ANSWER sequence (1..3)
+  // TESTING: For testing, send NO_ANSWER notifications immediately or schedule at 2-min intervals
+  if (attemptNumber >= 1 && attemptNumber <= 3) {
+    const step = `AFTER_${attemptNumber}_NO_ANSWER`;
+    if (await ensureOnce(lead.id, step)) {
+      const copy = getAttemptCopy(step);
+      const tz = pickTz(lead.timezone || QUEBEC_TZ);
+      const now = moment().tz(tz);
+      const delayMs = (attemptNumber - 1) * 2 * 60 * 1000; // 0, 2, 4 minutes
+      const scheduledAt = now.clone().add(delayMs, "milliseconds").toDate();
+
+      if (delayMs === 0) {
+        // Send immediately for first attempt
+        await sendEmailAndSMS({
+          lead,
+          subject: copy.subject,
+          smsBody: copy.smsBody,
+          skipEmail: attemptNumber === 3,
+          context: {
+            attemptNumber,
+            outcome,
+            title: copy.title,
+            subtitle: copy.subtitle,
+            cta_text: copy.cta_text,
+            cta_link: BOOKING_URL,
+            bodyText: copy.bodyText,
+            closingText: copy.closingText,
+          },
+        });
+      } else {
+        // Schedule for later attempts
+        await prisma.notificationEvent.create({
+          data: {
+            leadId: lead.id,
+            step,
+            scheduledAt,
+            metadata: { attemptNumber },
+          },
+        });
+      }
+    }
+  }
+
+  // ORIGINAL: Comment out for testing; restore after
+  /*
   if (attemptNumber >= 1 && attemptNumber <= 3) {
     const step = `AFTER_${attemptNumber}_NO_ANSWER`;
     if (await ensureOnce(lead.id, step)) {
@@ -395,9 +480,9 @@ export async function handleAttemptNotifications({
       });
     }
   }
+  */
 }
 
-// Same as above but the “quick” variant (15m/30m) after a positive/engaged signal.
 export async function handleQuickAttemptNotifications({
   lead,
   attemptNumber,
@@ -421,6 +506,50 @@ export async function handleQuickAttemptNotifications({
     return;
   }
 
+  // TESTING: For testing, send NO_ANSWER_QUICK notifications immediately or schedule at 2-min intervals
+  if (outcome === "NO_ANSWER" && attemptNumber >= 1 && attemptNumber <= 3) {
+    const step = `AFTER_${attemptNumber}_NO_ANSWER_QUICK`;
+    if (await ensureOnce(lead.id, step)) {
+      const copy = getAttemptCopy(step);
+      const tz = pickTz(lead.timezone || QUEBEC_TZ);
+      const now = moment().tz(tz);
+      const delayMs = (attemptNumber - 1) * 2 * 60 * 1000; // 0, 2, 4 minutes
+      const scheduledAt = now.clone().add(delayMs, "milliseconds").toDate();
+
+      if (delayMs === 0) {
+        // Send immediately for first attempt
+        await sendEmailAndSMS({
+          lead,
+          subject: copy.subject,
+          smsBody: copy.smsBody,
+          skipEmail: attemptNumber === 3,
+          context: {
+            attemptNumber,
+            outcome,
+            title: copy.title,
+            subtitle: copy.subtitle,
+            cta_text: copy.cta_text,
+            cta_link: BOOKING_URL,
+            bodyText: copy.bodyText,
+            closingText: copy.closingText,
+          },
+        });
+      } else {
+        // Schedule for later attempts
+        await prisma.notificationEvent.create({
+          data: {
+            leadId: lead.id,
+            step,
+            scheduledAt,
+            metadata: { attemptNumber },
+          },
+        });
+      }
+    }
+  }
+
+  // ORIGINAL: Comment out for testing; restore after
+  /*
   if (outcome === "NO_ANSWER" && attemptNumber >= 1 && attemptNumber <= 3) {
     const step = `AFTER_${attemptNumber}_NO_ANSWER_QUICK`;
     if (await ensureOnce(lead.id, step)) {
@@ -443,6 +572,7 @@ export async function handleQuickAttemptNotifications({
       });
     }
   }
+  */
 }
 
 // -----------------------------------------------------------------------------
