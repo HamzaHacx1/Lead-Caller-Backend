@@ -1,11 +1,20 @@
-import { PrismaClient } from "@prisma/client";
 // jobs/dispatcher.js
+import { PrismaClient } from "@prisma/client";
 import moment from "moment-timezone";
 
+import { sendEmail, sendSMS } from "../helpers/notify.js";
 import { START, END, pickTz } from "../lib/schedule.js";
 import { callOutbound } from "../lib/elevenlabs.js";
 import { QUEBEC_TZ } from "../lib/quebecTime.js";
 
+const APP_NAME = process.env.APP_NAME || "Emploi Rapide";
+const SUPPORT_NUMBER = process.env.SUPPORT_NUMBER || "";
+const BOOKING_URL =
+  process.env.BOOKING_URL ||
+  process.env.DASHBOARD_URL ||
+  "https://emploirapide.ca/documents";
+
+// ...
 const prisma = new PrismaClient();
 
 /** Optional: compress time in staging (e.g., TIME_SCALE=60 means 1s = 1m) */
@@ -14,6 +23,9 @@ const TICK_MS = Math.max(
   1000,
   Number(process.env.DISPATCHER_TICK_MS ?? "30000")
 ); // default: 30s
+
+/** Feature flag: turn pre-call messages on/off quickly */
+const PRECALL_ENABLED = (process.env.PRECALL_ENABLED ?? "1") === "1";
 
 function scaleDelay(ms) {
   return Math.max(0, Math.floor(ms / TIME_SCALE));
@@ -24,6 +36,104 @@ function insideWindow(date, tz) {
   const dow = m.day(); // 0 Sun..6 Sat
   const h = m.hour();
   return dow !== 0 && dow !== 6 && h >= START && h < END;
+}
+
+/** One-time guard per attempt: inserts NotificationEvent step=PRECALL_<attemptId> if missing */
+async function ensurePrecallOnce(leadId, attemptId) {
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const step = `PRECALL_${attemptId}`;
+      const exists = await tx.notificationEvent.findFirst({
+        where: { leadId, step },
+        select: { id: true },
+      });
+      if (exists) return false;
+      await tx.notificationEvent.create({
+        data: { leadId, step, metadata: { attemptId } },
+      });
+      return true;
+    });
+  } catch {
+    // If anything races, treat as "not allowed to send again"
+    return false;
+  }
+}
+
+/** Render + send pre-call email + SMS (best-effort; don't throw) */
+
+/** Render + send pre-call email + SMS (best-effort; don't throw) */
+async function sendPreCallNudge(lead, attempt) {
+  // === EXACT SMS you provided ===
+  const smsBody =
+    "Salut, c’est Simon d’Emploi Rapide — je viens de t’envoyer un courriel important 📩 Va le voir dès maintenant.";
+
+  // === EXACT email you provided ===
+  const subject = "Tu veux un job ? Il te reste une seule étape !";
+
+  // minimal sanitize helper (protect against weird names)
+  const safe = (s) =>
+    sanitizeHtml(String(s || ""), { allowedTags: [], allowedAttributes: {} });
+
+  const html = `
+    <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.55;color:#0f172a">
+      <p>Salut 👋</p>
+
+      <p>Tu viens tout juste de remplir notre formulaire pour trouver un emploi rapidement 🙌</p>
+
+      <p><strong>Bonne nouvelle : t’es à 1 clic de finaliser ton inscription sur notre plateforme.</strong></p>
+
+      <p>👉 Clique ici pour compléter ton profil (3 minutes max) :</p>
+
+      <p style="margin:16px 0">
+        <a href="${BOOKING_URL}" target="_blank" rel="noopener"
+           style="display:inline-block;background:#111827;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:600">
+          ➡️ INSCRIPTION ICI
+        </a>
+      </p>
+
+      <p>Tout est fait pour aller vite. Pas besoin de tout réécrire — on s’occupe de tout 💪</p>
+
+      <p>À bientôt !</p>
+
+      ${
+        SUPPORT_NUMBER
+          ? `<p style="font-size:12px;color:#64748b">Besoin d’aide ? Écris-nous ou appelle ${SUPPORT_NUMBER}.</p>`
+          : ""
+      }
+    </div>
+  `;
+
+  // Email (best-effort)
+  if (lead.email && /\S+@\S+\.\S+/.test(String(lead.email))) {
+    try {
+      await sendEmail({ to: safe(lead.email), subject, html });
+      console.log("[PRECALL:email] sent", {
+        leadId: lead.id,
+        attemptId: attempt.id,
+      });
+    } catch (e) {
+      console.warn("[PRECALL:email] failed", e?.message);
+    }
+  } else {
+    console.log("[PRECALL:email] skipped (no valid email)", {
+      leadId: lead.id,
+    });
+  }
+
+  // SMS (best-effort)
+  if (lead.phone && String(lead.phone).replace(/[^\d+]/g, "").length >= 10) {
+    try {
+      await sendSMS({ to: String(lead.phone).trim(), body: smsBody });
+      console.log("[PRECALL:sms] sent", {
+        leadId: lead.id,
+        attemptId: attempt.id,
+      });
+    } catch (e) {
+      console.warn("[PRECALL:sms] failed", e?.message);
+    }
+  } else {
+    console.log("[PRECALL:sms] skipped (no valid phone)", { leadId: lead.id });
+  }
 }
 
 /**
@@ -43,7 +153,7 @@ async function claimOneDueLead(limitWindowCheck = true) {
   });
 
   for (const lead of candidates) {
-    // hard guard against dialing outside window
+    // guard against dialing outside window
     if (
       limitWindowCheck &&
       !insideWindow(new Date(), lead.timezone || QUEBEC_TZ)
@@ -51,15 +161,15 @@ async function claimOneDueLead(limitWindowCheck = true) {
       continue;
     }
 
-    // advisory lock per lead.id (transaction-scoped)
-    const got = await prisma.$queryRaw`
-      SELECT pg_try_advisory_lock(${BigInt(lead.id)}) AS ok;
-    `;
+    // advisory lock per lead.id (session lock; not transaction-scoped)
+    const got = await prisma.$queryRaw`SELECT pg_try_advisory_lock(${BigInt(
+      lead.id
+    )}) AS ok;`;
     const ok = Boolean(got?.[0]?.ok);
     if (!ok) continue;
 
     try {
-      // Re-read lead inside a transaction to confirm state
+      // Re-read lead inside a transaction to confirm state and fetch attempt
       const claimed = await prisma.$transaction(async (tx) => {
         const fresh = await tx.lead.findUnique({ where: { id: lead.id } });
         if (
@@ -76,7 +186,7 @@ async function claimOneDueLead(limitWindowCheck = true) {
           data: { status: "IN_PROGRESS", lastProcessedAt: new Date() },
         });
 
-        // Fetch the scheduled attempt we’re about to execute (highest attemptNumber with SCHEDULED at/<= now)
+        // Fetch the scheduled attempt we’re about to execute
         const attempt = await tx.callAttempt.findFirst({
           where: {
             leadId: lead.id,
@@ -97,17 +207,15 @@ async function claimOneDueLead(limitWindowCheck = true) {
 
       const { fresh: lockedLead, attempt } = claimed;
 
-      // No scheduled attempt found (rare if someone edited DB) → push back to SCHEDULED next window and release
+      // No scheduled attempt found (rare if someone edited DB) → push back to next window and release
       if (!attempt) {
         const tz = lockedLead.timezone || QUEBEC_TZ;
         const m = moment().tz(tz);
-        // next safe minute inside window
         let next = m
           .clone()
           .minute(Math.ceil((m.minute() + 1) / 5) * 5)
           .second(0);
         if (!insideWindow(next, tz)) {
-          // roll to next day 09:00 (skip weekend)
           next = m
             .clone()
             .add(1, "day")
@@ -125,7 +233,14 @@ async function claimOneDueLead(limitWindowCheck = true) {
         continue;
       }
 
-      // Place the call (idempotent on your side; webhook will finalize)
+      // ---- NEW: send pre-call nudge (once per attempt) ----
+      const allowed = await ensurePrecallOnce(lockedLead.id, attempt.id);
+      if (allowed) {
+        // fire-and-forget (don’t block outbound), but await here to keep ordering
+        await sendPreCallNudge(lockedLead, attempt);
+      }
+
+      // Place the call (webhook will finalize outcome + next attempt)
       await callOutbound({
         to: lockedLead.phone,
         lead: {
@@ -140,11 +255,7 @@ async function claimOneDueLead(limitWindowCheck = true) {
         metadata: { source: "dispatcher", callAttemptId: attempt.id },
       });
 
-      // We keep lead as IN_PROGRESS; webhook will:
-      //  - set outcome
-      //  - increment attempts
-      //  - schedule next attempt if needed
-      // Finally, release lock
+      // Release advisory lock
       await prisma.$queryRaw`SELECT pg_advisory_unlock(${BigInt(lead.id)});`;
 
       // Claimed and triggered exactly one lead this loop
@@ -160,14 +271,11 @@ async function claimOneDueLead(limitWindowCheck = true) {
 }
 
 export async function runDispatcherOnce() {
-  // Try to claim and fire as many as fit this tick
   let madeProgress = false;
-  // small loop to drain a few per tick
   for (let i = 0; i < 10; i++) {
     const ok = await claimOneDueLead(true);
     if (!ok) break;
     madeProgress = true;
-    // tiny delay to avoid hammering
     await new Promise((r) => setTimeout(r, scaleDelay(150)));
   }
   return madeProgress;
@@ -175,7 +283,9 @@ export async function runDispatcherOnce() {
 
 export function startDispatcher() {
   console.log(
-    `[DISPATCHER] start: tick=${TICK_MS}ms, TIME_SCALE=${TIME_SCALE}, window=${START}:00–${END}:00`
+    `[DISPATCHER] start: tick=${TICK_MS}ms, TIME_SCALE=${TIME_SCALE}, window=${START}:00–${END}:00, precall=${
+      PRECALL_ENABLED ? "on" : "off"
+    }`
   );
   const timer = setInterval(async () => {
     try {
@@ -185,5 +295,5 @@ export function startDispatcher() {
     }
   }, TICK_MS);
 
-  return () => clearInterval(timer); // returns a stop() function
+  return () => clearInterval(timer); // stop()
 }
