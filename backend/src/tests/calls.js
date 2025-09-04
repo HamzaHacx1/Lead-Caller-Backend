@@ -203,7 +203,7 @@ r.post("/notifications/enqueue", async (req, res) => {
       data: {
         leadId: lead.id,
         step,
-        scheduledAt: new Date(scheduledUnix * 1000),
+        scheduledAt: new Date(Date.now() + 10 * 1000),
         metadata: { attemptNumber: lead.attempts || 1, test: true },
       },
     });
