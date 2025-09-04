@@ -1,7 +1,7 @@
 // jobs/dispatcher.js
 import { PrismaClient } from "@prisma/client";
 import moment from "moment-timezone";
-
+import sanitizeHtml from "sanitize-html";
 import { sendEmail, sendSMS } from "../helpers/notify.js";
 import { START, END, pickTz } from "../lib/schedule.js";
 import { callOutbound } from "../lib/elevenlabs.js";
