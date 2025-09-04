@@ -9,6 +9,16 @@ import { nextInsideWindowUnix, START, END, pickTz } from "../lib/schedule.js";
 import { handleQuickAttemptNotifications } from "../lib/notifications.js";
 import { nowIn, QUEBEC_TZ } from "../lib/quebecTime.js";
 
+// ---- dialing policy (tweak for prod/testing) ----
+const MAX_ATTEMPTS = 3; // total attempts per lead
+const RETRY_GAP_MINUTES = 10; // gap between attempts for distinct nudges
+const FINAL_STATUSES = new Set([
+  "ANSWERED",
+  "NO_ANSWER",
+  "VOICEMAIL",
+  "FAILED",
+]);
+
 const prisma = new PrismaClient();
 const r = Router();
 
@@ -290,65 +300,91 @@ r.post("/elevenlabs", async (req, res) => {
       }
 
       /** ---------- Update attempt & lead ---------- */
-      const lastAttempt = await prisma.callAttempt.findFirst({
-        where: { leadId: lead.id },
-        orderBy: { attemptNumber: "desc" },
-      });
-      const nextAttemptNumber = (lastAttempt?.attemptNumber ?? 0) + 1;
+      // ---------- Update attempt & lead (IDEMPOTENT) ----------
 
-      let attempt = await prisma.callAttempt.upsert({
-        where: {
-          leadId_attemptNumber: {
+      // 1) Try to locate the attempt by conversation_id (best signal)
+      let attempt = null;
+      if (convoId) {
+        attempt = await prisma.callAttempt.findFirst({
+          where: { leadId: lead.id, conversationId: convoId },
+        });
+      }
+
+      // 2) Fallback: most recent SCHEDULED/PLACED attempt in the last 45 mins
+      if (!attempt) {
+        const fortyFiveMinsAgo = new Date(Date.now() - 45 * 60 * 1000);
+        attempt = await prisma.callAttempt.findFirst({
+          where: {
             leadId: lead.id,
-            attemptNumber: nextAttemptNumber,
+            status: { in: ["SCHEDULED", "PLACED"] },
+            scheduledAt: { gte: fortyFiveMinsAgo },
           },
-        },
-        create: {
-          leadId: lead.id,
-          attemptNumber: nextAttemptNumber,
-          status: "SCHEDULED",
-          scheduledAt: new Date(),
-        },
-        update: {}, // do nothing if already exists
-      });
+          orderBy: { attemptNumber: "desc" },
+        });
+      }
 
-      await prisma.callAttempt.update({
-        where: { id: attempt.id },
-        data: {
-          status: outcome,
-          startedAt: startedAt || attempt.startedAt,
-          endedAt: endedAt || new Date(),
-          conversationId:
-            d.conversation_id || convoId || attempt.conversationId,
-          recordingUrl: recordingUrl || attempt.recordingUrl || null,
-          transcript: transcriptStr ?? attempt.transcript ?? null,
-          payload: body,
-        },
-      });
+      // 3) Last resort: create a new attempt row (ONLY if truly nothing to update)
+      //    scheduledAt is required in your schema, so set it sensibly.
+      if (!attempt) {
+        const last = await prisma.callAttempt.findFirst({
+          where: { leadId: lead.id },
+          orderBy: { attemptNumber: "desc" },
+        });
 
-      // Derive attemptsCount from DB
-      const latest = await prisma.callAttempt.findFirst({
+        attempt = await prisma.callAttempt.create({
+          data: {
+            leadId: lead.id,
+            provider: "ELEVENLABS",
+            status: "PLACED",
+            attemptNumber: (last?.attemptNumber ?? 0) + 1,
+            scheduledAt: startedAt || new Date(),
+            startedAt: startedAt || new Date(),
+            conversationId: convoId || null,
+            payload: {},
+          },
+        });
+      }
+
+      // 4) Idempotency: if already finalized, do not change the attempt number or reschedule
+      if (!FINAL_STATUSES.has(attempt.status)) {
+        attempt = await prisma.callAttempt.update({
+          where: { id: attempt.id },
+          data: {
+            status: outcome, // ANSWERED/NO_ANSWER/VOICEMAIL/FAILED
+            startedAt: startedAt || attempt.startedAt,
+            endedAt: endedAt || new Date(),
+            conversationId: attempt.conversationId || convoId || null,
+            recordingUrl: recordingUrl || attempt.recordingUrl || null,
+            transcript: transcriptStr ?? attempt.transcript ?? null,
+            payload: body,
+          },
+        });
+      }
+
+      // 5) Compute the true “current attempt number” and max attempts for the lead
+      const maxAttempt = await prisma.callAttempt.findFirst({
         where: { leadId: lead.id },
         orderBy: { attemptNumber: "desc" },
       });
-      const attemptsCount = latest?.attemptNumber ?? 0;
+      const currentAttemptNumber = attempt.attemptNumber;
+      const attemptsOnLead = maxAttempt?.attemptNumber ?? currentAttemptNumber;
 
+      // keep the lead in sync
       await prisma.lead.update({
         where: { id: lead.id },
         data: {
           status: outcome,
           lastOutcome: outcome,
           lastAttemptAt: new Date(),
-          attempts: attemptsCount,
+          attempts: attemptsOnLead,
         },
       });
 
-      // 🔔 Notifications on ANSWERED or NO_ANSWER
       try {
         if (["ANSWERED", "NO_ANSWER"].includes(outcome)) {
           await handleQuickAttemptNotifications({
             lead,
-            attemptNumber: attemptsCount,
+            attemptNumber: currentAttemptNumber,
             outcome,
           });
         }
@@ -382,56 +418,66 @@ r.post("/elevenlabs", async (req, res) => {
       }).catch(() => {});
 
       // ---------- Retry (2-minute test cycle, window-safe) ----------
+      // ---------- Retry (window-safe, idempotent, capped) ----------
       const retryable = ["FAILED", "NO_ANSWER", "VOICEMAIL"];
-      if (retryable.includes(outcome) && attemptsCount < 3) {
-        const tz = pickTz(lead.timezone || QUEBEC_TZ);
 
-        // 2 minutes from now in lead tz
-        let nextM = moment().tz(tz).add(2, "minutes").second(0).millisecond(0);
-
-        // clamp into business window quickly for tests
-        const h = nextM.hour();
-        const dow = nextM.day();
-        if (dow === 0 || dow === 6 || h < START || h >= END) {
-          const insideUnix = await nextInsideWindowUnix(tz);
-          nextM = moment.unix(insideUnix).tz(tz);
-        }
-
-        const scheduledAt = nextM.toDate();
-
-        // upsert next attempt (attemptNumber+1)
-        await prisma.callAttempt.upsert({
+      if (retryable.includes(outcome) && currentAttemptNumber < MAX_ATTEMPTS) {
+        // Do NOT double-schedule if the next attempt already exists
+        const nextAttemptExists = await prisma.callAttempt.findUnique({
           where: {
             leadId_attemptNumber: {
               leadId: lead.id,
-              attemptNumber: attemptsCount + 1,
+              attemptNumber: currentAttemptNumber + 1,
             },
           },
-          create: {
+          select: { id: true },
+        });
+
+        if (!nextAttemptExists) {
+          const tz = pickTz(lead.timezone || QUEBEC_TZ);
+
+          // schedule RETRY_GAP_MINUTES from now in lead tz
+          let nextM = moment()
+            .tz(tz)
+            .add(RETRY_GAP_MINUTES, "minutes")
+            .second(0)
+            .millisecond(0);
+
+          // clamp into business window quickly for tests
+          const h = nextM.hour();
+          const dow = nextM.day();
+          if (dow === 0 || dow === 6 || h < START || h >= END) {
+            const insideUnix = await nextInsideWindowUnix(tz);
+            nextM = moment.unix(insideUnix).tz(tz);
+          }
+
+          const scheduledAt = nextM.toDate();
+
+          await prisma.callAttempt.create({
+            data: {
+              leadId: lead.id,
+              attemptNumber: currentAttemptNumber + 1,
+              status: "SCHEDULED",
+              scheduledAt,
+              payload: { schedule_reason: outcome, hangup_on_voicemail: true },
+            },
+          });
+
+          await prisma.lead.update({
+            where: { id: lead.id },
+            data: {
+              status: "SCHEDULED",
+              nextScheduledAt: scheduledAt,
+              attempts: currentAttemptNumber + 1,
+            },
+          });
+
+          console.log("[WEBHOOK] next attempt scheduled", {
             leadId: lead.id,
-            attemptNumber: attemptsCount + 1,
-            status: "SCHEDULED",
-            scheduledAt,
-            payload: { schedule_reason: outcome, hangup_on_voicemail: true },
-          },
-          update: { scheduledAt }, // re-schedule if it existed
-        });
-
-        // make lead visible to dispatcher for the next try
-        await prisma.lead.update({
-          where: { id: lead.id },
-          data: {
-            status: "SCHEDULED",
-            nextScheduledAt: scheduledAt,
-            attempts: attemptsCount + 1,
-          },
-        });
-
-        console.log("[WEBHOOK] next attempt scheduled", {
-          leadId: lead.id,
-          attemptNumber: attemptsCount + 1,
-          when_local: nextM.format("YYYY-MM-DD HH:mm:ss z"),
-        });
+            attemptNumber: currentAttemptNumber + 1,
+            when_local: nextM.format("YYYY-MM-DD HH:mm:ss z"),
+          });
+        }
       }
 
       console.log("[WEBHOOK] processed (structured):", {
@@ -439,11 +485,10 @@ r.post("/elevenlabs", async (req, res) => {
         outcome,
         from_number,
         to_number,
-        attempts: attemptsCount,
+        attempts: attemptsOnLead, // or currentAttemptNumber
       });
       return res.json({ ok: true });
-    }
-
+    } // <-- CLOSE the structured branch here
     /** ---------- Fallback: flat payloads ---------- */
     const statusMap = {
       answered: "ANSWERED",
