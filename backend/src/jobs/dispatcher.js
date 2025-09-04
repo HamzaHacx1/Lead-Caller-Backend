@@ -62,7 +62,7 @@ async function ensurePrecallOnce(leadId, attemptId) {
 /** Render + send pre-call email + SMS (best-effort; don't throw) */
 
 /** Render + send pre-call email + SMS (best-effort; don't throw) */
-async function sendPreCallNudge(lead, attempt) {
+export async function sendPreCallNudge(lead, attempt) {
   // === EXACT SMS you provided ===
   const smsBody =
     "Salut, c’est Simon d’Emploi Rapide — je viens de t’envoyer un courriel important 📩 Va le voir dès maintenant.";

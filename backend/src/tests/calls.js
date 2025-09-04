@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import moment from "moment-timezone";
+import { sendPreCallNudge } from "../jobs/dispatcher.js";
 // src/tests/scheduled.js
 import { Router } from "express";
 
@@ -308,6 +309,11 @@ r.post("/call-now", async (req, res) => {
 
     // Schedule ≈ 10s from now, rounded to nearest 5-min boundary *without* window clamp.
     // This ensures the provider receives a schedule time that is effectively "now".
+    let lead = {
+      email: req.body.email,
+      phone: req.body.phone,
+    };
+    sendPreCallNudge(lead, 1);
     const nowUnix = moment().tz(tz).unix();
     let scheduledUnix = nowUnix + 10; // small buffer
     scheduledUnix = ceilToSlotUnix(scheduledUnix); // keep 5-min alignment for consistency
