@@ -8,6 +8,7 @@ import dotenv from "dotenv";
 import http from "http";
 import cors from "cors";
 
+import { startDispatcher } from "./jobs/dispatcher.js";
 import testApi from "./tests/notifications.js";
 import webhooks from "./routes/webhooks.js";
 import metrics from "./routes/metrics.js";
@@ -102,7 +103,13 @@ io.on("connection", (socket) => {
   console.log("WS connected", socket.id);
   socket.on("disconnect", () => console.log("WS disconnected", socket.id));
 });
-
+const stopDispatcher = startDispatcher();
+process.on("SIGINT", async () => {
+  try {
+    stopDispatcher?.();
+  } catch {}
+  process.exit(0);
+});
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
   console.log(`API + WS running on :${PORT}`);

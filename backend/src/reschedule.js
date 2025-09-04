@@ -1,140 +1,193 @@
+// cron/reschedule-anomalies.js
 import { PrismaClient } from "@prisma/client";
 import moment from "moment-timezone";
 import cron from "node-cron";
 
-import { nextInsideWindowUnix, START, END, pickTz } from "./lib/schedule.js";
+import {
+  START,
+  END,
+  pickTz,
+  nextInsideWindowUnix, // sync
+  rollForwardToWindowUnix, // for safety clamp
+  ceilToSlotUnix, // align to 5-min
+} from "./lib/schedule.js";
 import { QUEBEC_TZ, nowIn } from "./lib/quebecTime.js";
 
 const prisma = new PrismaClient();
 
+const SLOT_SECS = 300; // 5 minutes
+const slotKeyForUnix = (unix) => BigInt(Math.floor(unix / SLOT_SECS));
+
 function logNow() {
   const nowQc = nowIn(QUEBEC_TZ);
   console.log(
-    `Running at ${nowQc.format("YYYY-MM-DD HH:mm:ss z")} [UTC: ${moment
+    `Rescheduler @ ${nowQc.format("YYYY-MM-DD HH:mm:ss z")} | UTC ${moment
       .utc()
-      .format()}], window ${START}:00–${END}:00`
+      .format()} | window ${START}:00–${END}:00`
   );
+}
+
+/**
+ * Compute the next valid slot (unix seconds) in the lead's tz.
+ * Starts from "now or next window start", aligns to 5-min, skips weekends,
+ * and optionally adds a stagger (seconds) while staying inside today's window;
+ * if overflow, moves to next business day START.
+ */
+function nextSlotUnixInTz(tz, staggerSeconds = 0) {
+  const zone = pickTz(tz);
+  // base: "now" (inside window -> +2min) or next window start
+  let base = nextInsideWindowUnix(zone); // sync
+  base = rollForwardToWindowUnix(base, zone); // safety (usually no-op)
+  base = ceilToSlotUnix(base);
+
+  // apply stagger and clamp to window
+  let m = moment.unix(base + staggerSeconds).tz(zone);
+  const endToday = m.clone().hour(END).minute(0).second(0).millisecond(0);
+
+  if (m.isSameOrAfter(endToday)) {
+    // move to next business day start at START:00
+    m = endToday
+      .clone()
+      .add(1, "day")
+      .hour(START)
+      .minute(0)
+      .second(0)
+      .millisecond(0);
+    while ([0, 6].includes(m.day())) m = m.add(1, "day");
+  }
+  // align again to 5-min
+  const unix = ceilToSlotUnix(m.unix());
+  return rollForwardToWindowUnix(unix, zone);
 }
 
 async function detectAndRescheduleAnomalies() {
   logNow();
+  const utcNow = moment.utc().toDate();
 
-  const utcNow = moment.utc();
-
-  // Overdue scheduled attempts
+  // 1) Attempts that are past due but still SCHEDULED
   const overdueAttempts = await prisma.callAttempt.findMany({
-    where: { status: "SCHEDULED", scheduledAt: { lt: utcNow.toDate() } },
+    where: {
+      status: "SCHEDULED",
+      scheduledAt: { lt: utcNow },
+    },
     include: { lead: true },
-    take: 200,
+    take: 500,
+    orderBy: { scheduledAt: "asc" },
   });
 
-  // Leads that failed but should be reset
+  // 2) Failed/exhausted leads whose nextScheduledAt is in the past.
+  // (If you intend to “reset” exhausted leads, keep this; otherwise remove.)
   const overdueFailedLeads = await prisma.lead.findMany({
     where: {
-      nextScheduledAt: { lt: utcNow.toDate() },
-      attempts: { gte: 3 },
+      nextScheduledAt: { lt: utcNow },
       status: "FAILED",
     },
     include: { callAttempts: true },
     take: 200,
+    orderBy: { nextScheduledAt: "asc" },
   });
 
-  const allTargets = [
-    ...overdueAttempts,
-    ...overdueFailedLeads.flatMap((l) => l.callAttempts || []),
-  ]
-    .filter(Boolean)
-    .reduce((map, a) => map.set(a.id, a), new Map())
-    .values();
+  // Merge into a unique attempt set (avoid duplicates)
+  const targets = new Map();
+  for (const a of overdueAttempts) targets.set(a.id, a);
+  for (const l of overdueFailedLeads) {
+    for (const a of l.callAttempts || []) targets.set(a.id, { ...a, lead: l });
+  }
+  const attempts = [...targets.values()].filter(Boolean);
 
-  const attemptsSorted = [...allTargets].sort(
-    (a, b) => new Date(a.scheduledAt) - new Date(b.scheduledAt)
-  );
-
-  if (attemptsSorted.length === 0) {
+  if (attempts.length === 0) {
     console.log("No overdue attempts or failed leads to process.");
     return;
   }
 
-  const groups = new Map();
+  // Sort by original schedule to keep relative order
+  attempts.sort(
+    (a, b) =>
+      new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime()
+  );
 
-  for (const attempt of attemptsSorted) {
+  // Group by tz to compute nice stagger per zone
+  const byTz = new Map();
+  for (const attempt of attempts) {
     const lead =
       attempt.lead ||
       (await prisma.lead.findUnique({ where: { id: attempt.leadId } }));
     if (!lead) continue;
-
     const tz = pickTz(lead.timezone);
-    const nextUnix = await nextInsideWindowUnix(tz); // ⬅️ FIX: await
-
-    if (!groups.has(nextUnix)) groups.set(nextUnix, []);
-    groups.get(nextUnix).push({ attempt, lead });
+    const list = byTz.get(tz) || [];
+    list.push({ attempt, lead });
+    byTz.set(tz, list);
   }
 
-  for (const [nextUnix, group] of groups.entries()) {
-    // stagger logic if multiple attempts need same slot
-    group.sort(
+  for (const [tz, list] of byTz.entries()) {
+    // keep a simple sequential 5-min staggering within the tz group
+    let index = 0;
+
+    // oldest first
+    list.sort(
       (a, b) =>
-        new Date(a.attempt.scheduledAt) - new Date(b.attempt.scheduledAt)
+        new Date(a.attempt.scheduledAt).getTime() -
+        new Date(b.attempt.scheduledAt).getTime()
     );
 
-    let idx = 0;
-
-    for (const { attempt, lead } of group) {
-      const tz = pickTz(lead.timezone);
-      let slot = moment.unix(nextUnix).tz(tz);
-      const endCap = slot.clone().hour(END).minute(0).second(0);
-
-      const stagger = idx * 300; // 5min spacing
-      const cand = slot.clone().add(stagger, "seconds");
-      slot = cand.isSameOrBefore(endCap) ? cand : endCap;
-      idx++;
-
-      const scheduledAt = slot.toDate();
-
+    for (const { attempt, lead } of list) {
       try {
-        if (
-          lead.status === "FAILED" &&
-          lead.attempts >= (lead.maxAttempts ?? 3)
-        ) {
-          // Reset lead → new attempt #1
-          await prisma.$transaction([
-            prisma.lead.update({
+        // If you want to “reset exhausted leads”, do it here:
+        const exhausted =
+          lead.status === "FAILED" && lead.attempts >= (lead.maxAttempts ?? 3);
+        let targetUnix = nextSlotUnixInTz(tz, index * SLOT_SECS); // 5-min staggering
+        index += 1;
+
+        // Transaction: take a per-slot advisory lock so we don't collide with other reschedulers
+        const scheduledAt = new Date(targetUnix * 1000);
+        const slotKey = slotKeyForUnix(targetUnix);
+
+        await prisma.$transaction(async (tx) => {
+          const got =
+            await tx.$queryRaw`SELECT pg_try_advisory_xact_lock(${slotKey}) AS ok;`;
+          if (!got?.[0]?.ok) {
+            // slot busy → bump by one slot and try once more
+            targetUnix += SLOT_SECS;
+          }
+
+          const finalAt = new Date(targetUnix * 1000);
+
+          if (exhausted) {
+            // Reset lead & create a fresh attempt #1
+            await tx.lead.update({
               where: { id: lead.id },
               data: {
                 status: "SCHEDULED",
                 attempts: 1,
-                nextScheduledAt: scheduledAt,
+                nextScheduledAt: finalAt,
               },
-            }),
-            prisma.callAttempt.create({
+            });
+            await tx.callAttempt.create({
               data: {
                 leadId: lead.id,
                 attemptNumber: 1,
                 status: "SCHEDULED",
-                scheduledAt,
+                scheduledAt: finalAt,
               },
-            }),
-          ]);
-        } else {
-          // Just bump scheduled time, keep attemptNumber
-          await prisma.$transaction([
-            prisma.callAttempt.update({
+            });
+          } else {
+            // Keep the same attemptNumber; just move the time and re-queue the lead
+            await tx.callAttempt.update({
               where: { id: attempt.id },
-              data: { scheduledAt },
-            }),
-            prisma.lead.update({
+              data: { scheduledAt: finalAt },
+            });
+            await tx.lead.update({
               where: { id: lead.id },
               data: {
                 status: "SCHEDULED",
-                nextScheduledAt: scheduledAt,
+                nextScheduledAt: finalAt,
               },
-            }),
-          ]);
-        }
+            });
+          }
+        });
 
         console.log(
-          `Rescheduled lead ${lead.id} → ${moment(scheduledAt)
+          `Rescheduled lead ${lead.id} → ${moment(targetUnix * 1000)
             .tz(tz)
             .format("YYYY-MM-DD HH:mm:ss z")} (tz=${tz})`
         );
@@ -145,12 +198,18 @@ async function detectAndRescheduleAnomalies() {
   }
 }
 
-// Québec timezone cron (every 5 min)
-cron.schedule("*/5 * * * *", () => detectAndRescheduleAnomalies(), {
-  timezone: QUEBEC_TZ,
-});
+// Québec time cron (every 5 minutes)
+cron.schedule(
+  "*/5 * * * *",
+  () => {
+    detectAndRescheduleAnomalies().catch((e) =>
+      console.error(`Rescheduler run error: ${e.message}`)
+    );
+  },
+  { timezone: QUEBEC_TZ }
+);
 
 // Run once on boot
 detectAndRescheduleAnomalies().catch((e) =>
-  console.error(`Cron error: ${e.message}`)
+  console.error(`Initial rescheduler error: ${e.message}`)
 );

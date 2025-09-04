@@ -84,3 +84,33 @@ export function isInsideQuebecWindow(
   const h = m.hour();
   return h >= startHour && h < endHour;
 }
+// lib/schedule.js (additions)
+
+export const SLOT_SECS = 300; // 5 minutes
+
+/** Ceil to the next 5-min boundary */
+export function ceilToSlotUnix(unix) {
+  return Math.ceil(unix / SLOT_SECS) * SLOT_SECS;
+}
+
+/** Roll a unix timestamp forward to inside [START,END), skipping weekends */
+export function rollForwardToWindowUnix(unix, tz = QUEBEC_TZ) {
+  const m = moment.unix(unix).tz(pickTz(tz)).seconds(0).milliseconds(0);
+
+  // jump to Monday if weekend
+  while (m.day() === 0 || m.day() === 6) {
+    m.add(1, "day").hour(START).minute(0).second(0).millisecond(0);
+  }
+
+  const start = m.clone().hour(START).minute(0).second(0).millisecond(0);
+  const end = m.clone().hour(END).minute(0).second(0).millisecond(0);
+
+  if (m.isBefore(start)) return start.unix();
+  if (m.isSameOrAfter(end)) {
+    // next day @ START (skip weekends)
+    const n = m.add(1, "day").hour(START).minute(0).second(0).millisecond(0);
+    while (n.day() === 0 || n.day() === 6) n.add(1, "day");
+    return n.unix();
+  }
+  return m.unix();
+}
