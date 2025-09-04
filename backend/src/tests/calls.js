@@ -1,6 +1,5 @@
 import { PrismaClient } from "@prisma/client";
 import moment from "moment-timezone";
-import { sendPreCallNudge } from "../jobs/dispatcher.js";
 // src/tests/scheduled.js
 import { Router } from "express";
 
@@ -12,6 +11,7 @@ import {
   ceilToSlotUnix,
 } from "../lib/schedule.js";
 import { processScheduledNotifications } from "../lib/notifications.js";
+import { sendPreCallNudge } from "../jobs/dispatcher.js";
 import { callOutbound } from "../lib/elevenlabs.js";
 import { QUEBEC_TZ } from "../lib/quebecTime.js";
 
@@ -307,23 +307,25 @@ r.post("/call-now", async (req, res) => {
 
     const tz = pickTz(timezone);
 
-    // Schedule ≈ 10s from now, rounded to nearest 5-min boundary *without* window clamp.
-    // This ensures the provider receives a schedule time that is effectively "now".
-    let lead = {
-      email: req.body.email,
-      phone: req.body.phone,
+    // E.164-ish normalization
+    const normPhone = (p) => {
+      const digits = String(p || "").replace(/[^\d+]/g, "");
+      if (digits.startsWith("+")) return digits;
+      if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+      if (digits.length === 10) return `+1${digits}`;
+      return digits;
     };
-    sendPreCallNudge(lead, 1);
+    const toNumber = normPhone(phone);
+
+    // ~10s from now (no slot rounding for true “call now”)
     const nowUnix = moment().tz(tz).unix();
-    let scheduledUnix = nowUnix + 10; // small buffer
-    scheduledUnix = ceilToSlotUnix(scheduledUnix); // keep 5-min alignment for consistency
+    const scheduledUnix = nowUnix + 10;
 
     const result = await prisma.$transaction(async (tx) => {
-      // create the lead
       const lead = await tx.lead.create({
         data: {
           fullName: full_name,
-          phone: String(phone).replace(/[^\d+]/g, ""),
+          phone: toNumber,
           email,
           timezone: tz,
           status: "SCHEDULED",
@@ -331,7 +333,6 @@ r.post("/call-now", async (req, res) => {
         },
       });
 
-      // attempt #1 immediately
       const attempt = await tx.callAttempt.create({
         data: {
           leadId: lead.id,
@@ -354,24 +355,30 @@ r.post("/call-now", async (req, res) => {
       return { lead, attempt, scheduledUnix };
     });
 
-    // Fire the call right away (doesn't block DB tx)
+    // Optional: pre-call nudge using the real lead
+    try {
+      await sendPreCallNudge(result.lead, 1);
+    } catch (e) {
+      console.warn("[call-now] pre-call nudge error:", e?.message);
+    }
+
+    // Kick off the call immediately (best-effort)
     let convoId = null;
     try {
       const outbound = await callOutbound({
-        to: String(phone).replace(/[^\d+]/g, ""),
+        to: toNumber,
         lead: {
           id: result.lead.id,
           email,
           timezone: tz,
-          scheduledUnix: result.scheduledUnix, // provider uses this
+          scheduledUnix: result.scheduledUnix,
         },
         attemptNumber: 1,
         variables,
         metadata: { source: "test_call_now" },
       });
-      convoId = outbound.conversation_id || null;
+      convoId = outbound?.conversation_id || null;
 
-      // record conversation id for convenience (best-effort)
       if (convoId) {
         await prisma.callAttempt.update({
           where: { id: result.attempt.id },

@@ -347,26 +347,29 @@ async function scheduleQuickNotifications(lead) {
   const tz = pickTz(lead.timezone || QUEBEC_TZ);
   const now = moment().tz(tz);
 
-  // TESTING: For testing, schedule at 2-min intervals
+  // Keep step keys; shorten timings for quick tests
   const plans = [
-    { step: "ANSWERED_15M", delayMs: 2 * 60 * 1000 }, // 2 minutes
-    { step: "ANSWERED_30M", delayMs: 4 * 60 * 1000 }, // 4 minutes
+    { step: "ANSWERED_15M", delayMs: 3 * 60 * 1000 }, // 3 minutes
+    { step: "ANSWERED_30M", delayMs: 6 * 60 * 1000 }, // 6 minutes
   ];
 
   for (const p of plans) {
     const target = now.clone().add(p.delayMs, "milliseconds").toDate();
+    // If you want strict business-hours clamping during tests, swap `target` with:
+    // const scheduledAt = rollForwardToWindowDate(target, tz, START);
     await prisma.notificationEvent.create({
       data: {
         leadId: lead.id,
         step: p.step,
-        scheduledAt: target, // No window clamping for testing
+        scheduledAt: target,
         metadata: { attemptNumber: 1 },
       },
     });
   }
+}
 
-  // ORIGINAL: Comment out for testing; restore after
-  /*
+// ORIGINAL: Comment out for testing; restore after
+/*
   const plans = [
     { step: "ANSWERED_15M", delayMs: 15 * 60 * 1000 },
     { step: "ANSWERED_30M", delayMs: 30 * 60 * 1000 },
@@ -385,7 +388,7 @@ async function scheduleQuickNotifications(lead) {
     });
   }
   */
-}
+// }
 
 // -----------------------------------------------------------------------------
 // Public APIs used by webhook
@@ -417,7 +420,7 @@ export async function handleAttemptNotifications({
   // TESTING: For testing, send NO_ANSWER notifications immediately or schedule at 2-min intervals
   if (attemptNumber >= 1 && attemptNumber <= 3) {
     const step = `AFTER_${attemptNumber}_NO_ANSWER`;
-    if (await ensureOnce(lead.id, step)) {
+    if (await ensureOnce(lead.id, `${step}_SCHEDULED`)) {
       const copy = getAttemptCopy(step);
       const tz = pickTz(lead.timezone || QUEBEC_TZ);
       const now = moment().tz(tz);
@@ -509,11 +512,11 @@ export async function handleQuickAttemptNotifications({
   // TESTING: For testing, send NO_ANSWER_QUICK notifications immediately or schedule at 2-min intervals
   if (outcome === "NO_ANSWER" && attemptNumber >= 1 && attemptNumber <= 3) {
     const step = `AFTER_${attemptNumber}_NO_ANSWER_QUICK`;
-    if (await ensureOnce(lead.id, step)) {
+    if (await ensureOnce(lead.id, `${step}_SCHEDULED`)) {
       const copy = getAttemptCopy(step);
       const tz = pickTz(lead.timezone || QUEBEC_TZ);
       const now = moment().tz(tz);
-      const delayMs = (attemptNumber - 1) * 2 * 60 * 1000; // 0, 2, 4 minutes
+      const delayMs = (attemptNumber - 1) * 3 * 60 * 1000; // 0, 3, 6 minutes
       const scheduledAt = now.clone().add(delayMs, "milliseconds").toDate();
 
       if (delayMs === 0) {
@@ -578,15 +581,75 @@ export async function handleQuickAttemptNotifications({
 // -----------------------------------------------------------------------------
 // Worker to process due notifications (safe across multiple instances)
 // -----------------------------------------------------------------------------
+// export async function processScheduledNotifications(limit = 200) {
+//   const now = new Date();
+
+//   // Pull a reasonable batch
+//   const notifications = await prisma.notificationEvent.findMany({
+//     where: {
+//       scheduledAt: { lte: now },
+//       step: {
+//         in: ["ANSWERED_24H", "ANSWERED_48H", "ANSWERED_15M", "ANSWERED_30M"],
+//       },
+//     },
+//     include: { lead: true },
+//     take: limit,
+//     orderBy: { scheduledAt: "asc" },
+//   });
+
+//   for (const n of notifications) {
+//     try {
+//       // advisory tx lock on this notification id (prevents double-send)
+//       const got =
+//         await prisma.$queryRaw`SELECT pg_try_advisory_xact_lock(${BigInt(
+//           n.id
+//         )}) AS ok;`;
+//       if (!got?.[0]?.ok) continue;
+
+//       const attemptNumber = n.metadata?.attemptNumber || 1;
+
+//       if (["ANSWERED_24H", "ANSWERED_48H"].includes(n.step)) {
+//         await processScheduledNotification(n.lead, n.step, attemptNumber);
+//       } else if (["ANSWERED_15M", "ANSWERED_30M"].includes(n.step)) {
+//         await processQuickScheduledNotification(n.lead, n.step, attemptNumber);
+//       }
+
+//       // delete marker row after success
+//       await prisma.notificationEvent.delete({ where: { id: n.id } });
+//     } catch (e) {
+//       console.warn(
+//         `[NOTIFY] processScheduledNotifications error id=${n.id}: ${e.message}`
+//       );
+//       // keep row for retry on next tick
+//     }
+//   }
+// }
+
+// -----------------------------------------------------------------------------
+// Internal processors (use _SENT marker to prevent duplicates)
+// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// Worker to process due notifications (safe across multiple instances)
+// -----------------------------------------------------------------------------
 export async function processScheduledNotifications(limit = 200) {
   const now = new Date();
 
-  // Pull a reasonable batch
   const notifications = await prisma.notificationEvent.findMany({
     where: {
       scheduledAt: { lte: now },
       step: {
-        in: ["ANSWERED_24H", "ANSWERED_48H", "ANSWERED_15M", "ANSWERED_30M"],
+        in: [
+          // ANSWERED series (kept)
+          "ANSWERED_24H",
+          "ANSWERED_48H",
+          "ANSWERED_15M",
+          "ANSWERED_30M",
+          // NEW: NO_ANSWER scheduled steps
+          "AFTER_2_NO_ANSWER",
+          "AFTER_3_NO_ANSWER",
+          "AFTER_2_NO_ANSWER_QUICK",
+          "AFTER_3_NO_ANSWER_QUICK",
+        ],
       },
     },
     include: { lead: true },
@@ -596,7 +659,6 @@ export async function processScheduledNotifications(limit = 200) {
 
   for (const n of notifications) {
     try {
-      // advisory tx lock on this notification id (prevents double-send)
       const got =
         await prisma.$queryRaw`SELECT pg_try_advisory_xact_lock(${BigInt(
           n.id
@@ -609,15 +671,27 @@ export async function processScheduledNotifications(limit = 200) {
         await processScheduledNotification(n.lead, n.step, attemptNumber);
       } else if (["ANSWERED_15M", "ANSWERED_30M"].includes(n.step)) {
         await processQuickScheduledNotification(n.lead, n.step, attemptNumber);
+      } else if (["AFTER_2_NO_ANSWER", "AFTER_3_NO_ANSWER"].includes(n.step)) {
+        await processNoAnswerScheduledNotification(
+          n.lead,
+          n.step,
+          attemptNumber
+        );
+      } else if (
+        ["AFTER_2_NO_ANSWER_QUICK", "AFTER_3_NO_ANSWER_QUICK"].includes(n.step)
+      ) {
+        await processNoAnswerQuickScheduledNotification(
+          n.lead,
+          n.step,
+          attemptNumber
+        );
       }
 
-      // delete marker row after success
       await prisma.notificationEvent.delete({ where: { id: n.id } });
     } catch (e) {
       console.warn(
         `[NOTIFY] processScheduledNotifications error id=${n.id}: ${e.message}`
       );
-      // keep row for retry on next tick
     }
   }
 }
@@ -667,4 +741,36 @@ async function processQuickScheduledNotification(lead, step, attemptNumber) {
       },
     });
   }
+}
+
+// NEW: NO_ANSWER scheduled processors (not “answered” copy)
+async function processNoAnswerScheduledNotification(lead, step, attemptNumber) {
+  if (await ensureOnce(lead.id, `${step}_SENT`)) {
+    const copy = getAttemptCopy(step, false);
+    await sendEmailAndSMS({
+      lead,
+      subject: copy.subject,
+      smsBody: copy.smsBody,
+      skipEmail: attemptNumber === 3, // mirror your immediate path
+      context: {
+        attemptNumber,
+        outcome: "NO_ANSWER",
+        title: copy.title,
+        subtitle: copy.subtitle,
+        cta_text: copy.cta_text,
+        cta_link: BOOKING_URL,
+        bodyText: copy.bodyText,
+        closingText: copy.closingText,
+      },
+    });
+  }
+}
+
+async function processNoAnswerQuickScheduledNotification(
+  lead,
+  step,
+  attemptNumber
+) {
+  // identical to the non-quick version; split kept for clarity/logging
+  return processNoAnswerScheduledNotification(lead, step, attemptNumber);
 }

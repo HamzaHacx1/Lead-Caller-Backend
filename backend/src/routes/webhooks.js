@@ -1,17 +1,13 @@
+// routes/webhook.js
 import { PrismaClient } from "@prisma/client";
+import moment from "moment-timezone";
 import { Router } from "express";
 import fetch from "node-fetch";
 import crypto from "crypto";
 
-import {
-  nextInsideWindowUnix,
-  nextDayInsideWindowUnix,
-  START,
-  END,
-  pickTz,
-} from "../lib/schedule.js";
-import { nowIn, formatInQuebec, QUEBEC_TZ } from "../lib/quebecTime.js";
-import { handleAttemptNotifications } from "../lib/notifications.js";
+import { nextInsideWindowUnix, START, END, pickTz } from "../lib/schedule.js";
+import { handleQuickAttemptNotifications } from "../lib/notifications.js";
+import { nowIn, QUEBEC_TZ } from "../lib/quebecTime.js";
 
 const prisma = new PrismaClient();
 const r = Router();
@@ -186,7 +182,7 @@ r.post("/elevenlabs", async (req, res) => {
     let title = null;
     let termination = null;
 
-    /** ---------- New EL structured payloads ---------- */
+    /** ---------- Structured payloads ---------- */
     if (body.type === "post_call_transcription" && body.data) {
       const d = body.data;
       outcome = mapOutcomeFromTranscription(d);
@@ -330,7 +326,7 @@ r.post("/elevenlabs", async (req, res) => {
         },
       });
 
-      // Derive attemptsCount from DB instead of lead.attempts
+      // Derive attemptsCount from DB
       const latest = await prisma.callAttempt.findFirst({
         where: { leadId: lead.id },
         orderBy: { attemptNumber: "desc" },
@@ -347,10 +343,10 @@ r.post("/elevenlabs", async (req, res) => {
         },
       });
 
-      // 🔔 Trigger attempt notifications (structured branch)
+      // 🔔 Notifications on ANSWERED or NO_ANSWER
       try {
-        if (outcome === "NO_ANSWER") {
-          await handleAttemptNotifications({
+        if (["ANSWERED", "NO_ANSWER"].includes(outcome)) {
+          await handleQuickAttemptNotifications({
             lead,
             attemptNumber: attemptsCount,
             outcome,
@@ -361,7 +357,7 @@ r.post("/elevenlabs", async (req, res) => {
       }
 
       /** ---------- Push to external backend ---------- */
-      const crmPayload = {
+      postToExternal({
         leadId: lead.id,
         fullName: lead.fullName,
         phone: lead.phone,
@@ -383,15 +379,27 @@ r.post("/elevenlabs", async (req, res) => {
         dataCollectionsRaw,
         transcript: transcriptArr || [],
         raw: body,
-      };
-      postToExternal(crmPayload).catch(() => {});
+      }).catch(() => {});
 
-      /** ---------- Retry on FAILED/NO_ANSWER/VOICEMAIL ---------- */
+      // ---------- Retry (2-minute test cycle, window-safe) ----------
       const retryable = ["FAILED", "NO_ANSWER", "VOICEMAIL"];
       if (retryable.includes(outcome) && attemptsCount < 3) {
-        const scheduledUnix = nextDayInsideWindowUnix(
-          lead.timezone || QUEBEC_TZ
-        );
+        const tz = pickTz(lead.timezone || QUEBEC_TZ);
+
+        // 2 minutes from now in lead tz
+        let nextM = moment().tz(tz).add(2, "minutes").second(0).millisecond(0);
+
+        // clamp into business window quickly for tests
+        const h = nextM.hour();
+        const dow = nextM.day();
+        if (dow === 0 || dow === 6 || h < START || h >= END) {
+          const insideUnix = await nextInsideWindowUnix(tz);
+          nextM = moment.unix(insideUnix).tz(tz);
+        }
+
+        const scheduledAt = nextM.toDate();
+
+        // upsert next attempt (attemptNumber+1)
         await prisma.callAttempt.upsert({
           where: {
             leadId_attemptNumber: {
@@ -403,16 +411,30 @@ r.post("/elevenlabs", async (req, res) => {
             leadId: lead.id,
             attemptNumber: attemptsCount + 1,
             status: "SCHEDULED",
-            scheduledAt: new Date(scheduledUnix * 1000),
+            scheduledAt,
             payload: { schedule_reason: outcome, hangup_on_voicemail: true },
           },
-          update: {
-            scheduledAt: new Date(scheduledUnix * 1000), // reschedule if already exists
+          update: { scheduledAt }, // re-schedule if it existed
+        });
+
+        // make lead visible to dispatcher for the next try
+        await prisma.lead.update({
+          where: { id: lead.id },
+          data: {
+            status: "SCHEDULED",
+            nextScheduledAt: scheduledAt,
+            attempts: attemptsCount + 1,
           },
+        });
+
+        console.log("[WEBHOOK] next attempt scheduled", {
+          leadId: lead.id,
+          attemptNumber: attemptsCount + 1,
+          when_local: nextM.format("YYYY-MM-DD HH:mm:ss z"),
         });
       }
 
-      console.log("[WEBHOOK] processed:", {
+      console.log("[WEBHOOK] processed (structured):", {
         leadId: lead.id,
         outcome,
         from_number,
@@ -422,7 +444,7 @@ r.post("/elevenlabs", async (req, res) => {
       return res.json({ ok: true });
     }
 
-    /** ---------- Fallback: old flat payloads ---------- */
+    /** ---------- Fallback: flat payloads ---------- */
     const statusMap = {
       answered: "ANSWERED",
       voicemail: "VOICEMAIL",
@@ -470,7 +492,7 @@ r.post("/elevenlabs", async (req, res) => {
     });
     const nextAttemptNumber = (lastAttempt?.attemptNumber ?? 0) + 1;
 
-    const attempt = await prisma.callAttempt.upsert({
+    await prisma.callAttempt.upsert({
       where: {
         leadId_attemptNumber: {
           leadId: lead.id,
@@ -505,6 +527,7 @@ r.post("/elevenlabs", async (req, res) => {
       orderBy: { attemptNumber: "desc" },
     });
     const attemptsCount = latest?.attemptNumber ?? 0;
+
     await prisma.lead.update({
       where: { id: lead.id },
       data: {
@@ -517,7 +540,7 @@ r.post("/elevenlabs", async (req, res) => {
 
     try {
       if (outcome === "NO_ANSWER") {
-        await handleAttemptNotifications({
+        await handleQuickAttemptNotifications({
           lead,
           attemptNumber: attemptsCount,
           outcome,
@@ -565,11 +588,23 @@ r.post("/elevenlabs", async (req, res) => {
       raw: body,
     }).catch(() => {});
 
+    // ---------- Retry (2-minute test cycle, window-safe) ----------
     if (
       ["FAILED", "NO_ANSWER", "VOICEMAIL"].includes(outcome) &&
       attemptsCount < 3
     ) {
-      const scheduledUnix = nextDayInsideWindowUnix(lead.timezone || QUEBEC_TZ);
+      const tz = pickTz(lead.timezone || QUEBEC_TZ);
+
+      let nextM = moment().tz(tz).add(2, "minutes").second(0).millisecond(0);
+      const h = nextM.hour();
+      const dow = nextM.day();
+      if (dow === 0 || dow === 6 || h < START || h >= END) {
+        const insideUnix = await nextInsideWindowUnix(tz);
+        nextM = moment.unix(insideUnix).tz(tz);
+      }
+
+      const scheduledAt = nextM.toDate();
+
       await prisma.callAttempt.upsert({
         where: {
           leadId_attemptNumber: {
@@ -581,12 +616,25 @@ r.post("/elevenlabs", async (req, res) => {
           leadId: lead.id,
           attemptNumber: attemptsCount + 1,
           status: "SCHEDULED",
-          scheduledAt: new Date(scheduledUnix * 1000),
+          scheduledAt,
           payload: { schedule_reason: outcome, hangup_on_voicemail: true },
         },
-        update: {
-          scheduledAt: new Date(scheduledUnix * 1000), // reschedule if duplicate
+        update: { scheduledAt },
+      });
+
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: {
+          status: "SCHEDULED",
+          nextScheduledAt: scheduledAt,
+          attempts: attemptsCount + 1,
         },
+      });
+
+      console.log("[WEBHOOK] next attempt scheduled (flat)", {
+        leadId: lead.id,
+        attemptNumber: attemptsCount + 1,
+        when_local: nextM.format("YYYY-MM-DD HH:mm:ss z"),
       });
     }
 
@@ -598,6 +646,7 @@ r.post("/elevenlabs", async (req, res) => {
     return res.json({ ok: true });
   } catch (e) {
     console.error("[WEBHOOK error]", e);
+    // Keep 200 to avoid EL retries storms, but note the error
     return res.status(200).json({ ok: true, note: "error_swallowed_for_el" });
   }
 });
