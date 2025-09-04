@@ -11,6 +11,7 @@ import {
   ceilToSlotUnix,
 } from "../lib/schedule.js";
 import { processScheduledNotifications } from "../lib/notifications.js";
+import { callOutbound } from "../lib/elevenlabs.js";
 import { QUEBEC_TZ } from "../lib/quebecTime.js";
 
 const prisma = new PrismaClient();
@@ -266,6 +267,130 @@ r.get("/slots/today", async (req, res) => {
     });
   } catch (e) {
     console.error("[/test/slots/today] error", e);
+    return res.status(500).json({ ok: false, error: e.message || "server" });
+  }
+});
+// ⬇️ add near top imports
+
+// ...
+
+/**
+ * POST /test/call-now
+ * Create a lead and trigger an immediate outbound call (≈ +10s), bypassing window/weekend.
+ * Body:
+ * {
+ *   "full_name": "Alice Johnson",
+ *   "phone": "+15145550123",
+ *   "email": "alice@example.com",
+ *   "timezone": "America/Toronto",
+ *   "variables": { "booking_url": "..." },   // optional
+ *   "metadata":  { "source": "test" }        // optional
+ * }
+ */
+r.post("/call-now", async (req, res) => {
+  try {
+    const {
+      full_name,
+      phone,
+      email = null,
+      timezone = QUEBEC_TZ,
+      variables = {},
+      metadata = {},
+    } = req.body || {};
+
+    if (!full_name || !phone) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "missing_name_or_phone" });
+    }
+
+    const tz = pickTz(timezone);
+
+    // Schedule ≈ 10s from now, rounded to nearest 5-min boundary *without* window clamp.
+    // This ensures the provider receives a schedule time that is effectively "now".
+    const nowUnix = moment().tz(tz).unix();
+    let scheduledUnix = nowUnix + 10; // small buffer
+    scheduledUnix = ceilToSlotUnix(scheduledUnix); // keep 5-min alignment for consistency
+
+    const result = await prisma.$transaction(async (tx) => {
+      // create the lead
+      const lead = await tx.lead.create({
+        data: {
+          fullName: full_name,
+          phone: String(phone).replace(/[^\d+]/g, ""),
+          email,
+          timezone: tz,
+          status: "SCHEDULED",
+          metadata: { ...metadata, test: true, call_now: true },
+        },
+      });
+
+      // attempt #1 immediately
+      const attempt = await tx.callAttempt.create({
+        data: {
+          leadId: lead.id,
+          attemptNumber: 1,
+          status: "SCHEDULED",
+          scheduledAt: new Date(scheduledUnix * 1000),
+          payload: { reason: "call_now" },
+        },
+      });
+
+      await tx.lead.update({
+        where: { id: lead.id },
+        data: {
+          attempts: 1,
+          lastAttemptAt: new Date(scheduledUnix * 1000),
+          nextScheduledAt: new Date(scheduledUnix * 1000),
+        },
+      });
+
+      return { lead, attempt, scheduledUnix };
+    });
+
+    // Fire the call right away (doesn't block DB tx)
+    let convoId = null;
+    try {
+      const outbound = await callOutbound({
+        to: String(phone).replace(/[^\d+]/g, ""),
+        lead: {
+          id: result.lead.id,
+          email,
+          timezone: tz,
+          scheduledUnix: result.scheduledUnix, // provider uses this
+        },
+        attemptNumber: 1,
+        variables,
+        metadata: { source: "test_call_now" },
+      });
+      convoId = outbound.conversation_id || null;
+
+      // record conversation id for convenience (best-effort)
+      if (convoId) {
+        await prisma.callAttempt.update({
+          where: { id: result.attempt.id },
+          data: { conversationId: convoId },
+        });
+      }
+    } catch (e) {
+      console.warn("[call-now] outbound error:", e?.message);
+    }
+
+    return res.json({
+      ok: true,
+      leadId: result.lead.id,
+      attemptId: result.attempt.id,
+      conversation_id: convoId,
+      scheduled_time_unix: result.scheduledUnix,
+      scheduled_time_local: moment
+        .unix(result.scheduledUnix)
+        .tz(tz)
+        .format("YYYY-MM-DD HH:mm:ss z"),
+      tz,
+      note: "Immediate outbound triggered (window bypassed).",
+    });
+  } catch (e) {
+    console.error("[/test/call-now] error", e);
     return res.status(500).json({ ok: false, error: e.message || "server" });
   }
 });
