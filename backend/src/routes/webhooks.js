@@ -312,19 +312,22 @@ r.post("/elevenlabs", async (req, res) => {
 
       // 2) Fallback: most recent SCHEDULED/PLACED attempt in the last 45 mins
       if (!attempt) {
+        // 2) Fallback: most recent attempt in the last 45 mins (regardless of status)
         const fortyFiveMinsAgo = new Date(Date.now() - 45 * 60 * 1000);
         attempt = await prisma.callAttempt.findFirst({
           where: {
             leadId: lead.id,
-            status: { in: ["SCHEDULED", "PLACED"] },
-            scheduledAt: { gte: fortyFiveMinsAgo },
+            OR: [
+              { startedAt: { gte: fortyFiveMinsAgo } },
+              { scheduledAt: { gte: fortyFiveMinsAgo } },
+            ],
           },
           orderBy: { attemptNumber: "desc" },
         });
       }
-
       // 3) Last resort: create a new attempt row (ONLY if truly nothing to update)
       //    scheduledAt is required in your schema, so set it sensibly.
+      // 3) Last resort: create a new attempt row
       if (!attempt) {
         const last = await prisma.callAttempt.findFirst({
           where: { leadId: lead.id },
@@ -334,8 +337,8 @@ r.post("/elevenlabs", async (req, res) => {
         attempt = await prisma.callAttempt.create({
           data: {
             leadId: lead.id,
-            provider: "ELEVENLABS",
-            status: "PLACED",
+            // status must be an AttemptOutcome; use the webhook's resolved outcome
+            status: outcome, // ✅ valid: ANSWERED/NO_ANSWER/VOICEMAIL/FAILED
             attemptNumber: (last?.attemptNumber ?? 0) + 1,
             scheduledAt: startedAt || new Date(),
             startedAt: startedAt || new Date(),
