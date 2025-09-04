@@ -168,6 +168,14 @@ async function findAttemptForWebhook(
 
 // ----------------------- schedule next attempt -----------------------
 function computeNextAttemptUnix(tz) {
+  // TESTING: For testing, schedule 2 minutes from now, aligned to 5-min slot
+  const zone = pickTz(tz || QUEBEC_TZ);
+  let unix = moment.tz(zone).add(2, "minutes").unix();
+  unix = ceilToSlotUnix(unix); // Align to 5-min slot
+  return unix;
+
+  // ORIGINAL: Comment out for testing; restore after
+  /*
   // Next business day at START, aligned to 5-min bin
   const zone = pickTz(tz || QUEBEC_TZ);
   let unix = moment
@@ -187,6 +195,7 @@ function computeNextAttemptUnix(tz) {
   unix = ceilToSlotUnix(unix);
   unix = rollForwardToWindowUnix(unix, zone); // safety clamp (no-op if already good)
   return unix;
+  */
 }
 
 // ----------------------- route -----------------------
