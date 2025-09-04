@@ -70,9 +70,9 @@ export async function sendPreCallNudge(lead, attempt) {
   // === EXACT email you provided ===
   const subject = "Tu veux un job ? Il te reste une seule étape !";
 
-  // minimal sanitize helper (protect against weird names)
-  const safe = (s) =>
-    sanitizeHtml(String(s || ""), { allowedTags: [], allowedAttributes: {} });
+  // // minimal sanitize helper (protect against weird names)
+  // const safe = (s) =>
+  //   sanitizeHtml(String(s || ""), { allowedTags: [], allowedAttributes: {} });
 
   const html = `
     <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.55;color:#0f172a">
