@@ -11,7 +11,7 @@ import {
   ceilToSlotUnix,
 } from "../lib/schedule.js";
 import { processScheduledNotifications } from "../lib/notifications.js";
-import { sendPreCallNudge } from "../jobs/dispatcher.js";
+// import { sendPreCallNudge } from "../jobs/dispatcher.js";
 import { callOutbound } from "../lib/elevenlabs.js";
 import { QUEBEC_TZ } from "../lib/quebecTime.js";
 
@@ -355,12 +355,12 @@ r.post("/call-now", async (req, res) => {
       return { lead, attempt, scheduledUnix };
     });
 
-    // Optional: pre-call nudge using the real lead
-    try {
-      await sendPreCallNudge(result.lead, 1);
-    } catch (e) {
-      console.warn("[call-now] pre-call nudge error:", e?.message);
-    }
+    // // Optional: pre-call nudge using the real lead
+    // try {
+    //   await sendPreCallNudge(result.lead, 1);
+    // } catch (e) {
+    //   console.warn("[call-now] pre-call nudge error:", e?.message);
+    // }
 
     // Kick off the call immediately (best-effort)
     let convoId = null;
