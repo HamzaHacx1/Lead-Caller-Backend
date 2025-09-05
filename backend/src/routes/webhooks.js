@@ -652,7 +652,7 @@ r.post("/elevenlabs", async (req, res) => {
 
       // ---------- Retry (window-safe, idempotent, capped) ----------
       const retryable = ["FAILED", "NO_ANSWER", "VOICEMAIL"];
-      if (retryable.includes(outcome) && currentAttemptNumber < MAX_ATTEMPTS) {
+      if (retryable.includes(outcome) && attemptsOnLead < MAX_ATTEMPTS) {
         console.debug(
           `[DEBUG] POST /elevenlabs: Outcome ${outcome} is retryable, checking for next attempt`
         );
@@ -985,7 +985,7 @@ r.post("/elevenlabs", async (req, res) => {
     // ---------- Retry (2-minute test cycle, window-safe) ----------
     if (
       ["FAILED", "NO_ANSWER", "VOICEMAIL"].includes(outcome) &&
-      attemptsCount < 3
+      attemptsCount < MAX_ATTEMPTS
     ) {
       console.debug(
         `[DEBUG] POST /elevenlabs: Outcome ${outcome} is retryable, attemptsCount: ${attemptsCount}`
