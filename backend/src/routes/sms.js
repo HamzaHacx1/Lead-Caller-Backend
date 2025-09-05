@@ -1,13 +1,12 @@
-import { PrismaClient } from "@prisma/client";
 import { Readable } from "node:stream";
 // routes/sms.js (ESM)
 import express from "express";
 import Twilio from "twilio";
 
 import { emit } from "../lib/realtime.js";
+import prisma from "../lib/prisma.js";
 
 const router = express.Router();
-const prisma = new PrismaClient();
 
 const {
   TWILIO_ACCOUNT_SID,

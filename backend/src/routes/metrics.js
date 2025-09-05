@@ -1,9 +1,8 @@
-import { PrismaClient } from "@prisma/client";
 import { Router } from "express";
 
 import { assertJwt } from "../lib/auth.js";
+import prisma from "../lib/prisma.js";
 
-const prisma = new PrismaClient();
 const r = Router();
 
 /** ---------------- utils ---------------- */

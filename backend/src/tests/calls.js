@@ -1,4 +1,3 @@
-import { PrismaClient } from "@prisma/client";
 import moment from "moment-timezone";
 // src/tests/scheduled.js
 import { Router } from "express";
@@ -14,8 +13,8 @@ import { processScheduledNotifications } from "../lib/notifications.js";
 // import { sendPreCallNudge } from "../jobs/dispatcher.js";
 import { callOutbound } from "../lib/elevenlabs.js";
 import { QUEBEC_TZ } from "../lib/quebecTime.js";
+import prisma from "../lib/prisma.js";
 
-const prisma = new PrismaClient();
 const r = Router();
 
 const SLOT_SECS = 300; // 5 minutes

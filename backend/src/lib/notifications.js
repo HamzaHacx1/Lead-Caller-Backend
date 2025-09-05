@@ -1,4 +1,3 @@
-import { PrismaClient } from "@prisma/client";
 import sanitizeHtml from "sanitize-html";
 import moment from "moment-timezone";
 
@@ -6,8 +5,8 @@ import { renderTemplate as renderHbsFile } from "../helpers/renderTemplates.js";
 import { sendEmail, sendSMS } from "../helpers/notify.js";
 import { START, END, pickTz } from "../lib/schedule.js";
 import { QUEBEC_TZ } from "../lib/quebecTime.js";
+import prisma from "./prisma.js";
 
-const prisma = new PrismaClient();
 const { SUPPORT_NUMBER, APP_NAME = "EmploiRapide" } = process.env;
 const BOOKING_URL =
   process.env.BOOKING_URL || "https://emploirapide.ca/documents";

@@ -1,5 +1,3 @@
-// routes/intake.js
-import { PrismaClient } from "@prisma/client";
 import sanitizeHtml from "sanitize-html";
 import moment from "moment-timezone";
 import { Router } from "express";
@@ -13,6 +11,8 @@ import {
   pickTz,
 } from "../lib/schedule.js";
 import { nowIn, QUEBEC_TZ } from "../lib/quebecTime.js";
+// routes/intake.js
+import prisma from "../lib/prisma.js";
 
 // -----------------------------------------------------------------------------
 // Constants & tiny helpers
@@ -55,7 +55,6 @@ function isValidPhone(v) {
 // -----------------------------------------------------------------------------
 // Setup
 // -----------------------------------------------------------------------------
-const prisma = new PrismaClient();
 const r = Router();
 
 // -----------------------------------------------------------------------------

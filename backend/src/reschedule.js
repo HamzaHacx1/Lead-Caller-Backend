@@ -1,5 +1,3 @@
-// cron/reschedule-anomalies.js
-import { PrismaClient } from "@prisma/client";
 import moment from "moment-timezone";
 import cron from "node-cron";
 
@@ -12,8 +10,8 @@ import {
   ceilToSlotUnix, // align to 5-min
 } from "./lib/schedule.js";
 import { QUEBEC_TZ, nowIn } from "./lib/quebecTime.js";
-
-const prisma = new PrismaClient();
+// cron/reschedule-anomalies.js
+import prisma from "./lib/prisma.js";
 
 const SLOT_SECS = 300; // 5 minutes
 const slotKeyForUnix = (unix) => BigInt(Math.floor(unix / SLOT_SECS));

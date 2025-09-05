@@ -1,4 +1,3 @@
-import { PrismaClient } from "@prisma/client";
 import moment from "moment-timezone";
 import { Router } from "express";
 import fetch from "node-fetch";
@@ -7,6 +6,7 @@ import crypto from "crypto";
 import { nextInsideWindowUnix, START, END, pickTz } from "../lib/schedule.js";
 import { handleQuickAttemptNotifications } from "../lib/notifications.js";
 import { nowIn, QUEBEC_TZ } from "../lib/quebecTime.js";
+import prisma from "../lib/prisma.js";
 
 // ---- dialing policy (tweak for prod/testing) ----
 const MAX_ATTEMPTS = 3; // total attempts per lead
@@ -18,7 +18,6 @@ const FINAL_STATUSES = new Set([
   "FAILED",
 ]);
 
-const prisma = new PrismaClient();
 const r = Router();
 
 /** ---------- HMAC verify ---------- */

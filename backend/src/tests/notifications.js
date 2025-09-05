@@ -1,4 +1,3 @@
-import { PrismaClient } from "@prisma/client";
 import sanitizeHtml from "sanitize-html";
 import moment from "moment-timezone";
 import { Router } from "express";
@@ -12,8 +11,8 @@ import { sendEmail, sendSMS } from "../helpers/notify.js";
 import { callOutbound } from "../lib/elevenlabs.js";
 import { QUEBEC_TZ } from "../lib/quebecTime.js";
 import { pickTz } from "../lib/schedule.js";
+import prisma from "../lib/prisma.js";
 
-const prisma = new PrismaClient();
 const r = Router();
 const { APP_NAME = "EmploiRapide" } = process.env;
 const retryable = ["FAILED", "NO_ANSWER", "VOICEMAIL"];

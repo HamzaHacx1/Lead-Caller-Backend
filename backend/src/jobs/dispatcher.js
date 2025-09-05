@@ -1,4 +1,3 @@
-import { PrismaClient } from "@prisma/client";
 import sanitizeHtml from "sanitize-html";
 import moment from "moment-timezone";
 
@@ -6,6 +5,7 @@ import { sendEmail, sendSMS } from "../helpers/notify.js";
 import { START, END, pickTz } from "../lib/schedule.js";
 import { callOutbound } from "../lib/elevenlabs.js";
 import { QUEBEC_TZ } from "../lib/quebecTime.js";
+import prisma from "../lib/prisma.js";
 
 const APP_NAME = process.env.APP_NAME || "Emploi Rapide";
 const SUPPORT_NUMBER = process.env.SUPPORT_NUMBER || "";
@@ -13,8 +13,6 @@ const BOOKING_URL =
   process.env.BOOKING_URL ||
   process.env.DASHBOARD_URL ||
   "https://emploirapide.ca/documents";
-
-const prisma = new PrismaClient();
 
 const TIME_SCALE = Number(process.env.TIME_SCALE ?? "1");
 const TICK_MS = Math.max(
