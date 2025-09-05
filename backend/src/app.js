@@ -1,10 +1,12 @@
+import dotenv from "dotenv";
+
+dotenv.config();
 import { Server as SocketIOServer } from "socket.io";
 import bodyParser from "body-parser";
 import express from "express";
 import multer from "multer";
 import morgan from "morgan";
 // src/server.js (ESM)
-import dotenv from "dotenv";
 import http from "http";
 import cors from "cors";
 
@@ -32,7 +34,6 @@ const allowedOrigins = [
   "https://call.emploirapide.ca", // prod subdomain
   "https://crm.emploirapide.ca", // prod CRM
 ];
-dotenv.config();
 
 // --- CORS ---
 app.use(
