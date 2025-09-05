@@ -219,7 +219,7 @@ async function claimOneDueLead(limitWindowCheck = true) {
       attempts: { gt: 0 }, // has at least attempt #1
     },
     orderBy: [{ nextScheduledAt: "asc" }, { id: "asc" }],
-    take: 25,
+    take: 250,
   });
   console.debug(
     `[DISPATCHER] claimOneDueLead: Found ${
