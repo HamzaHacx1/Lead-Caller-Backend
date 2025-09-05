@@ -858,7 +858,7 @@ export async function handleQuickAttemptNotifications({
 // -----------------------------------------------------------------------------
 // Worker to process due notifications (safe across multiple instances)
 // -----------------------------------------------------------------------------
-export async function processScheduledNotifications(limit = 200) {
+export async function processScheduledNotifications(limit = 500) {
   console.debug(
     `[DEBUG] processScheduledNotifications: Starting with limit ${limit}`
   );
