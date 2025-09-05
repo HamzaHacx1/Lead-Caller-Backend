@@ -1,4 +1,8 @@
 // src/cron.js  (or wherever yours lives)
+import dotenv from "dotenv";
+
+dotenv.config();
+
 import { processScheduledNotifications } from "./lib/notifications.js"; // note the .js
 
 // note the .js
