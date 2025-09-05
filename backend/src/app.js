@@ -80,7 +80,11 @@ app.use(upload.none());
 
 // --- Health ---
 app.get("/", (_req, res) => res.json({ ok: true }));
-
+console.log("[DEBUG] Environment Variables:", {
+  TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID,
+  TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN,
+  SMTP_USER: process.env.SMTP_USER,
+});
 // --- Routes ---
 app.use("/intake", intake);
 app.use("/webhooks", webhooks);
