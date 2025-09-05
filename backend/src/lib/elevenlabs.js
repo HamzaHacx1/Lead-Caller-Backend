@@ -4,6 +4,10 @@ import fetch from "node-fetch";
 import { START, END, QUEBEC_TZ } from "./quebecTime.js";
 import { prisma } from "./prisma.js"; // Assuming prisma is imported for DB access
 
+// Assuming prisma is imported for DB access
+
+// Assuming prisma is imported for DB access
+
 // ElevenLabs single outbound call endpoint
 export const EL_API =
   "https://api.elevenlabs.io/v1/convai/twilio/outbound-call";
