@@ -1,7 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import sanitizeHtml from "sanitize-html";
 import moment from "moment-timezone";
-
 import { sendEmail, sendSMS } from "../helpers/notify.js";
 import { START, END, pickTz } from "../lib/schedule.js";
 import { callOutbound } from "../lib/elevenlabs.js";
@@ -85,7 +84,7 @@ async function ensurePrecallOnce(leadId, attemptId) {
 }
 
 /** Render + send pre-call email + SMS (best-effort; don't throw) */
-async function sendPreCallNudge(lead, attempt) {
+export async function sendPreCallNudge(lead, attempt) {
   console.debug(
     `[DISPATCHER] sendPreCallNudge: Starting for leadId=${lead.id}, attemptId=${attempt.id}, PRECALL_ENABLED=${PRECALL_ENABLED}`
   );
