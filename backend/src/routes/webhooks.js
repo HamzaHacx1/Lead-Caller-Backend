@@ -677,29 +677,39 @@ r.post("/elevenlabs", async (req, res) => {
           const tz = pickTz(lead.timezone || QUEBEC_TZ);
           console.debug(`[DEBUG] POST /elevenlabs: Using timezone ${tz}`);
 
-          // schedule RETRY_GAP_MINUTES from now in lead tz
+          // // schedule RETRY_GAP_MINUTES from now in lead tz
+          // let nextM = moment()
+          //   .tz(tz)
+          //   .add(RETRY_GAP_MINUTES, "minutes")
+          //   .second(0)
+          //   .millisecond(0);
+          // console.debug(
+          //   `[DEBUG] POST /elevenlabs: Initial retry time: ${nextM.format()}`
+          // );
+
+          // // clamp into business window
+          // const h = nextM.hour();
+          // const dow = nextM.day();
+          // if (dow === 0 || dow === 6 || h < START || h >= END) {
+          //   console.debug(
+          //     `[DEBUG] POST /elevenlabs: Time outside business hours, clamping`
+          //   );
+          //   const insideUnix = await nextInsideWindowUnix(tz);
+          //   nextM = moment.unix(insideUnix).tz(tz);
+          //   console.debug(
+          //     `[DEBUG] POST /elevenlabs: Clamped to: ${nextM.format()}`
+          //   );
+          // }
+
+          // schedule 4 minutes from now in lead tz (bypass business hours for testing)
           let nextM = moment()
             .tz(tz)
-            .add(RETRY_GAP_MINUTES, "minutes")
+            .add(4, "minutes")
             .second(0)
             .millisecond(0);
           console.debug(
             `[DEBUG] POST /elevenlabs: Initial retry time: ${nextM.format()}`
           );
-
-          // clamp into business window
-          const h = nextM.hour();
-          const dow = nextM.day();
-          if (dow === 0 || dow === 6 || h < START || h >= END) {
-            console.debug(
-              `[DEBUG] POST /elevenlabs: Time outside business hours, clamping`
-            );
-            const insideUnix = await nextInsideWindowUnix(tz);
-            nextM = moment.unix(insideUnix).tz(tz);
-            console.debug(
-              `[DEBUG] POST /elevenlabs: Clamped to: ${nextM.format()}`
-            );
-          }
 
           const scheduledAt = nextM.toDate();
           console.debug(
@@ -984,22 +994,28 @@ r.post("/elevenlabs", async (req, res) => {
       const tz = pickTz(lead.timezone || QUEBEC_TZ);
       console.debug(`[DEBUG] POST /elevenlabs: Using timezone ${tz} (flat)`);
 
-      let nextM = moment().tz(tz).add(2, "minutes").second(0).millisecond(0);
+      // let nextM = moment().tz(tz).add(2, "minutes").second(0).millisecond(0);
+      // console.debug(
+      //   `[DEBUG] POST /elevenlabs: Initial retry time (flat): ${nextM.format()}`
+      // );
+      // const h = nextM.hour();
+      // const dow = nextM.day();
+      // if (dow === 0 || dow === 6 || h < START || h >= END) {
+      //   console.debug(
+      //     `[DEBUG] POST /elevenlabs: Time outside business hours, clamping (flat)`
+      //   );
+      //   const insideUnix = await nextInsideWindowUnix(tz);
+      //   nextM = moment.unix(insideUnix).tz(tz);
+      //   console.debug(
+      //     `[DEBUG] POST /elevenlabs: Clamped to: ${nextM.format()} (flat)`
+      //   );
+      // }
+
+      // schedule 4 minutes from now in lead tz (bypass business hours for testing)
+      let nextM = moment().tz(tz).add(4, "minutes").second(0).millisecond(0);
       console.debug(
         `[DEBUG] POST /elevenlabs: Initial retry time (flat): ${nextM.format()}`
       );
-      const h = nextM.hour();
-      const dow = nextM.day();
-      if (dow === 0 || dow === 6 || h < START || h >= END) {
-        console.debug(
-          `[DEBUG] POST /elevenlabs: Time outside business hours, clamping (flat)`
-        );
-        const insideUnix = await nextInsideWindowUnix(tz);
-        nextM = moment.unix(insideUnix).tz(tz);
-        console.debug(
-          `[DEBUG] POST /elevenlabs: Clamped to: ${nextM.format()} (flat)`
-        );
-      }
 
       const scheduledAt = nextM.toDate();
       console.debug(
