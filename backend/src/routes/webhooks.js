@@ -1,4 +1,3 @@
-// routes/webhook.js
 import { PrismaClient } from "@prisma/client";
 import moment from "moment-timezone";
 import { Router } from "express";
@@ -24,9 +23,19 @@ const r = Router();
 
 /** ---------- HMAC verify ---------- */
 function verifyHmac(req) {
+  console.debug(`[DEBUG] verifyHmac: Starting HMAC verification`);
   const secret = process.env.EL_WEBHOOK_SECRET || "";
   const header = req.headers["elevenlabs-signature"] || "";
-  if (!secret || !header || !req.rawBody) return false;
+  console.debug(
+    `[DEBUG] verifyHmac: Secret: ${
+      secret ? "present" : "missing"
+    }, Header: ${header}`
+  );
+
+  if (!secret || !header || !req.rawBody) {
+    console.debug(`[DEBUG] verifyHmac: Missing secret, header, or rawBody`);
+    return false;
+  }
 
   const parts = Object.fromEntries(
     header.split(",").map((s) => {
@@ -36,110 +45,201 @@ function verifyHmac(req) {
   );
   const t = parts.t;
   let v0 = parts.v0 || "";
-  if (!t || !v0) return false;
+  console.debug(`[DEBUG] verifyHmac: Parsed header parts - t: ${t}, v0: ${v0}`);
+
+  if (!t || !v0) {
+    console.debug(`[DEBUG] verifyHmac: Missing t or v0 in header`);
+    return false;
+  }
 
   if (v0.startsWith("sha256=")) v0 = v0.slice("sha256=".length);
   v0 = v0.trim().toLowerCase();
+  console.debug(`[DEBUG] verifyHmac: Cleaned v0: ${v0}`);
 
   const now = Math.floor(Date.now() / 1000);
   const ts = parseInt(t, 10);
-  if (!Number.isFinite(ts) || Math.abs(now - ts) > 30 * 60) return false;
+  console.debug(`[DEBUG] verifyHmac: Current time: ${now}, Timestamp: ${ts}`);
+
+  if (!Number.isFinite(ts) || Math.abs(now - ts) > 30 * 60) {
+    console.debug(`[DEBUG] verifyHmac: Timestamp invalid or too old`);
+    return false;
+  }
 
   const payload = `${t}.${req.rawBody.toString("utf8")}`;
+  console.debug(
+    `[DEBUG] verifyHmac: Payload for HMAC: ${payload.slice(0, 50)}...`
+  );
   const hex = crypto.createHmac("sha256", secret).update(payload).digest("hex");
+  console.debug(`[DEBUG] verifyHmac: Generated HMAC: ${hex}`);
 
   try {
-    return crypto.timingSafeEqual(
+    const isValid = crypto.timingSafeEqual(
       Buffer.from(hex, "hex"),
       Buffer.from(v0, "hex")
     );
-  } catch {
+    console.debug(`[DEBUG] verifyHmac: HMAC verification result: ${isValid}`);
+    return isValid;
+  } catch (e) {
+    console.debug(`[DEBUG] verifyHmac: HMAC comparison failed: ${e.message}`);
     return false;
   }
 }
 
 /** ---------- utils ---------- */
 function normPhone(p) {
-  if (!p) return null;
+  console.debug(`[DEBUG] normPhone: Normalizing phone: ${p}`);
+  if (!p) {
+    console.debug(`[DEBUG] normPhone: No phone provided, returning null`);
+    return null;
+  }
   const digits = String(p).replace(/[^\d+]/g, "");
-  if (digits.startsWith("+")) return digits;
-  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-  if (digits.length === 10) return `+1${digits}`;
+  console.debug(`[DEBUG] normPhone: Stripped to digits: ${digits}`);
+
+  if (digits.startsWith("+")) {
+    console.debug(
+      `[DEBUG] normPhone: Already has country code, returning ${digits}`
+    );
+    return digits;
+  }
+  if (digits.length === 11 && digits.startsWith("1")) {
+    console.debug(
+      `[DEBUG] normPhone: 11-digit US number, adding +: +${digits}`
+    );
+    return `+${digits}`;
+  }
+  if (digits.length === 10) {
+    console.debug(`[DEBUG] normPhone: 10-digit number, adding +1: +1${digits}`);
+    return `+1${digits}`;
+  }
+  console.debug(`[DEBUG] normPhone: Returning as-is: ${digits}`);
   return digits;
 }
 
 function mapOutcomeFromTranscription(data) {
+  console.debug(
+    `[DEBUG] mapOutcomeFromTranscription: Mapping outcome for data: ${JSON.stringify(
+      data
+    ).slice(0, 100)}...`
+  );
   const cs = data.analysis?.call_successful;
   const success =
     cs === true ||
     String(cs).toLowerCase() === "true" ||
     String(cs).toLowerCase() === "success";
   const term = String(data.metadata?.termination_reason || "").toLowerCase();
+  console.debug(
+    `[DEBUG] mapOutcomeFromTranscription: call_successful: ${cs}, termination_reason: ${term}`
+  );
 
-  if (success) return "ANSWERED";
-  if (term.includes("voicemail")) return "VOICEMAIL";
+  if (success) {
+    console.debug(`[DEBUG] mapOutcomeFromTranscription: Returning ANSWERED`);
+    return "ANSWERED";
+  }
+  if (term.includes("voicemail")) {
+    console.debug(`[DEBUG] mapOutcomeFromTranscription: Returning VOICEMAIL`);
+    return "VOICEMAIL";
+  }
   if (
     term.includes("no_answer") ||
     term.includes("no-answer") ||
     term.includes("noanswer") ||
     term.includes("silence") ||
     term.includes("busy")
-  )
+  ) {
+    console.debug(`[DEBUG] mapOutcomeFromTranscription: Returning NO_ANSWER`);
     return "NO_ANSWER";
+  }
   if (
     term.includes("carrier_error") ||
     term.includes("error") ||
     term.includes("failed")
-  )
+  ) {
+    console.debug(`[DEBUG] mapOutcomeFromTranscription: Returning FAILED`);
     return "FAILED";
+  }
+  console.debug(`[DEBUG] mapOutcomeFromTranscription: Defaulting to FAILED`);
   return "FAILED";
 }
 
 function pickDataCollections(d) {
+  console.debug(
+    `[DEBUG] pickDataCollections: Extracting data collections from: ${JSON.stringify(
+      d
+    ).slice(0, 100)}...`
+  );
   const r = d?.analysis?.data_collection_results || {};
-  const val = (k) => r[k]?.value ?? null;
-  return {
+  const val = (k) => {
+    const value = r[k]?.value ?? null;
+    console.debug(`[DEBUG] pickDataCollections: Key ${k} value: ${value}`);
+    return value;
+  };
+  const result = {
     availability: val("availability"),
     job_status: val("job_status"),
     salary_expectations: val("salary_expectations"),
     job_type: val("job_type"),
     job_field: val("job_field"),
   };
+  console.debug(
+    `[DEBUG] pickDataCollections: Returning: ${JSON.stringify(result)}`
+  );
+  return result;
 }
 
 /** ---------- POST to external backend (3 tries) ---------- */
 async function postToExternal(payload) {
+  console.debug(
+    `[DEBUG] postToExternal: Starting POST with payload: ${JSON.stringify(
+      payload
+    ).slice(0, 100)}...`
+  );
   const url = process.env.CRM_ENDPOINT;
-  if (!url) return;
+  if (!url) {
+    console.debug(`[DEBUG] postToExternal: No CRM_ENDPOINT set, skipping`);
+    return;
+  }
 
   const headers = { "Content-Type": "application/json" };
+  console.debug(
+    `[DEBUG] postToExternal: Using headers: ${JSON.stringify(headers)}`
+  );
 
   let attempt = 0;
   let delay = 500;
   while (attempt < 3) {
+    console.debug(`[DEBUG] postToExternal: Attempt ${attempt + 1} to ${url}`);
     try {
       const res = await fetch(url, {
         method: "POST",
         headers,
         body: JSON.stringify(payload),
       });
+      console.debug(`[DEBUG] postToExternal: Response status: ${res.status}`);
       if (res.ok) {
         console.log("[CRM] posted ok");
+        console.debug(`[DEBUG] postToExternal: Successful POST`);
         return;
       }
       const txt = await res.text().catch(() => "");
       console.warn("[CRM] post failed", res.status, txt);
+      console.debug(
+        `[DEBUG] postToExternal: Failed with status ${res.status}, text: ${txt}`
+      );
     } catch (e) {
       console.warn("[CRM] error", e.message);
+      console.debug(`[DEBUG] postToExternal: Error: ${e.message}`);
     }
     attempt++;
+    console.debug(`[DEBUG] postToExternal: Waiting ${delay}ms before retry`);
     await new Promise((r) => setTimeout(r, delay));
     delay *= 2;
   }
+  console.debug(`[DEBUG] postToExternal: All attempts failed`);
 }
 
 /** ---------- Route ---------- */
 r.post("/elevenlabs", async (req, res) => {
+  console.debug(`[DEBUG] POST /elevenlabs: Starting webhook processing`);
   try {
     const qcNow = nowIn(QUEBEC_TZ);
     console.log("[WEBHOOK]", {
@@ -164,8 +264,14 @@ r.post("/elevenlabs", async (req, res) => {
       disableAuth,
       debugBypass,
     });
+    console.debug(
+      `[DEBUG] POST /elevenlabs: Auth checks - hasValidHmac: ${hasValidHmac}, staticOk: ${staticOk}, disableAuth: ${disableAuth}, debugBypass: ${debugBypass}`
+    );
 
     if (!disableAuth && !debugBypass && !hasValidHmac && !staticOk) {
+      console.debug(
+        `[DEBUG] POST /elevenlabs: Authentication failed, returning 200 with invalid signature note`
+      );
       return res
         .status(200)
         .json({ ok: true, note: "invalid_signature_ignored_for_debug" });
@@ -174,6 +280,9 @@ r.post("/elevenlabs", async (req, res) => {
     const body = req.body || {};
     let outcome = "FAILED";
     let convoId = body.conversation_id || body.id || null;
+    console.debug(
+      `[DEBUG] POST /elevenlabs: Body type: ${body.type}, conversationId: ${convoId}`
+    );
 
     let transcriptArr = null;
     let transcriptStr = null;
@@ -194,8 +303,10 @@ r.post("/elevenlabs", async (req, res) => {
 
     /** ---------- Structured payloads ---------- */
     if (body.type === "post_call_transcription" && body.data) {
+      console.debug(`[DEBUG] POST /elevenlabs: Processing structured payload`);
       const d = body.data;
       outcome = mapOutcomeFromTranscription(d);
+      console.debug(`[DEBUG] POST /elevenlabs: Mapped outcome: ${outcome}`);
 
       const m = d.metadata || {};
       const pc = m.phone_call || {};
@@ -212,46 +323,93 @@ r.post("/elevenlabs", async (req, res) => {
         m.phone_number ||
         m.agent_number ||
         null;
+      console.debug(
+        `[DEBUG] POST /elevenlabs: From: ${from_number}, To: ${to_number}`
+      );
 
       const dyn =
         d.conversation_initiation_client_data?.dynamic_variables || {};
       const sysCalled = dyn.system__called_number || null;
       const sysCaller = dyn.system__caller_id || null;
+      console.debug(
+        `[DEBUG] POST /elevenlabs: sysCalled: ${sysCalled}, sysCaller: ${sysCaller}`
+      );
 
       const candidateLeadPhones = [from_number, sysCaller, m.caller_number]
         .map(normPhone)
         .filter(Boolean);
+      console.debug(
+        `[DEBUG] POST /elevenlabs: Candidate lead phones: ${candidateLeadPhones}`
+      );
 
       from_number = normPhone(from_number) || normPhone(sysCaller);
       to_number = normPhone(to_number) || normPhone(sysCalled);
+      console.debug(
+        `[DEBUG] POST /elevenlabs: Normalized - From: ${from_number}, To: ${to_number}`
+      );
 
       emailFromMeta = m.email || null;
       leadId = Number(dyn.lead_id) || Number(m.lead_id) || null;
+      console.debug(
+        `[DEBUG] POST /elevenlabs: emailFromMeta: ${emailFromMeta}, leadId: ${leadId}`
+      );
 
       startedAt = m.started_at ? new Date(m.started_at) : null;
       endedAt = m.ended_at ? new Date(m.ended_at) : new Date();
+      console.debug(
+        `[DEBUG] POST /elevenlabs: startedAt: ${startedAt}, endedAt: ${endedAt}`
+      );
+
       transcriptArr = Array.isArray(d.transcript) ? d.transcript : null;
       transcriptStr = transcriptArr ? JSON.stringify(transcriptArr) : null;
       if (transcriptStr && transcriptStr.length > 500_000) {
         transcriptStr = transcriptStr.slice(0, 500_000);
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Transcript truncated to 500,000 chars`
+        );
       }
+      console.debug(
+        `[DEBUG] POST /elevenlabs: Transcript array length: ${transcriptArr?.length}, string length: ${transcriptStr?.length}`
+      );
+
       recordingUrl = d.recording_url || d.audio_url || null;
+      console.debug(`[DEBUG] POST /elevenlabs: Recording URL: ${recordingUrl}`);
 
       costCents = Number(m.cost ?? null);
       durationSecs = Number(m.call_duration_secs ?? null);
       summary = d.analysis?.transcript_summary || null;
       title = d.analysis?.call_summary_title || null;
       termination = m.termination_reason || null;
+      console.debug(
+        `[DEBUG] POST /elevenlabs: costCents: ${costCents}, durationSecs: ${durationSecs}, summary: ${summary?.slice(
+          0,
+          50
+        )}, title: ${title}, termination: ${termination}`
+      );
 
       const dc = pickDataCollections(d);
       const dataCollectionsRaw = d?.analysis?.data_collection_results || {};
+      console.debug(
+        `[DEBUG] POST /elevenlabs: Data collections: ${JSON.stringify(dc)}`
+      );
 
       /** ---------- Lead matching ---------- */
       let lead = null;
       if (leadId) {
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Fetching lead by ID: ${leadId}`
+        );
         lead = await prisma.lead.findUnique({ where: { id: leadId } });
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Lead found: ${
+            lead ? JSON.stringify(lead) : "null"
+          }`
+        );
       }
       if (!lead) {
+        console.debug(
+          `[DEBUG] POST /elevenlabs: No lead found by ID, trying phone numbers: ${candidateLeadPhones}`
+        );
         for (const ph of candidateLeadPhones) {
           const found = await prisma.lead.findFirst({
             where: { phone: ph },
@@ -259,6 +417,11 @@ r.post("/elevenlabs", async (req, res) => {
           });
           if (found) {
             lead = found;
+            console.debug(
+              `[DEBUG] POST /elevenlabs: Lead found by phone ${ph}: ${JSON.stringify(
+                lead
+              )}`
+            );
             break;
           }
         }
@@ -267,6 +430,9 @@ r.post("/elevenlabs", async (req, res) => {
       if (!lead && process.env.AUTO_CREATE_LEAD_FROM_WEBHOOK === "1") {
         const tz = process.env.DEFAULT_TZ || QUEBEC_TZ;
         const phoneGuess = candidateLeadPhones[0] || from_number;
+        console.debug(
+          `[DEBUG] POST /elevenlabs: No lead found, auto-creating with phone: ${phoneGuess}, tz: ${tz}`
+        );
         if (phoneGuess) {
           lead = await prisma.lead.create({
             data: {
@@ -279,6 +445,11 @@ r.post("/elevenlabs", async (req, res) => {
               metadata: { created_from: "webhook_auto" },
             },
           });
+          console.debug(
+            `[DEBUG] POST /elevenlabs: Auto-created lead: ${JSON.stringify(
+              lead
+            )}`
+          );
         }
       }
       if (!lead) {
@@ -289,14 +460,21 @@ r.post("/elevenlabs", async (req, res) => {
           sysCalled,
           sysCaller,
         });
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Lead not found, returning 200`
+        );
         return res.status(200).json({ ok: true, note: "lead_not_found" });
       }
 
       if (emailFromMeta && (!lead.email || lead.email !== emailFromMeta)) {
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Updating lead email to ${emailFromMeta}`
+        );
         await prisma.lead.update({
           where: { id: lead.id },
           data: { email: emailFromMeta },
         });
+        console.debug(`[DEBUG] POST /elevenlabs: Lead email updated`);
       }
 
       /** ---------- Update attempt & lead ---------- */
@@ -305,15 +483,25 @@ r.post("/elevenlabs", async (req, res) => {
       // 1) Try to locate the attempt by conversation_id (best signal)
       let attempt = null;
       if (convoId) {
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Fetching attempt by conversationId: ${convoId}`
+        );
         attempt = await prisma.callAttempt.findFirst({
           where: { leadId: lead.id, conversationId: convoId },
         });
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Attempt found: ${
+            attempt ? JSON.stringify(attempt) : "null"
+          }`
+        );
       }
 
-      // 2) Fallback: most recent SCHEDULED/PLACED attempt in the last 45 mins
+      // 2) Fallback: most recent attempt in the last 45 mins
       if (!attempt) {
-        // 2) Fallback: most recent attempt in the last 45 mins (regardless of status)
         const fortyFiveMinsAgo = new Date(Date.now() - 45 * 60 * 1000);
+        console.debug(
+          `[DEBUG] POST /elevenlabs: No attempt by convoId, checking attempts since ${fortyFiveMinsAgo}`
+        );
         attempt = await prisma.callAttempt.findFirst({
           where: {
             leadId: lead.id,
@@ -324,21 +512,32 @@ r.post("/elevenlabs", async (req, res) => {
           },
           orderBy: { attemptNumber: "desc" },
         });
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Fallback attempt: ${
+            attempt ? JSON.stringify(attempt) : "null"
+          }`
+        );
       }
-      // 3) Last resort: create a new attempt row (ONLY if truly nothing to update)
-      //    scheduledAt is required in your schema, so set it sensibly.
+
       // 3) Last resort: create a new attempt row
       if (!attempt) {
+        console.debug(
+          `[DEBUG] POST /elevenlabs: No attempt found, creating new`
+        );
         const last = await prisma.callAttempt.findFirst({
           where: { leadId: lead.id },
           orderBy: { attemptNumber: "desc" },
         });
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Last attempt: ${
+            last ? JSON.stringify(last) : "null"
+          }`
+        );
 
         attempt = await prisma.callAttempt.create({
           data: {
             leadId: lead.id,
-            // status must be an AttemptOutcome; use the webhook's resolved outcome
-            status: outcome, // ✅ valid: ANSWERED/NO_ANSWER/VOICEMAIL/FAILED
+            status: outcome,
             attemptNumber: (last?.attemptNumber ?? 0) + 1,
             scheduledAt: startedAt || new Date(),
             startedAt: startedAt || new Date(),
@@ -346,14 +545,22 @@ r.post("/elevenlabs", async (req, res) => {
             payload: {},
           },
         });
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Created new attempt: ${JSON.stringify(
+            attempt
+          )}`
+        );
       }
 
       // 4) Idempotency: if already finalized, do not change the attempt number or reschedule
       if (!FINAL_STATUSES.has(attempt.status)) {
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Updating attempt ${attempt.id} (not finalized)`
+        );
         attempt = await prisma.callAttempt.update({
           where: { id: attempt.id },
           data: {
-            status: outcome, // ANSWERED/NO_ANSWER/VOICEMAIL/FAILED
+            status: outcome,
             startedAt: startedAt || attempt.startedAt,
             endedAt: endedAt || new Date(),
             conversationId: attempt.conversationId || convoId || null,
@@ -362,6 +569,11 @@ r.post("/elevenlabs", async (req, res) => {
             payload: body,
           },
         });
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Updated attempt: ${JSON.stringify(
+            attempt
+          )}`
+        );
       }
 
       // 5) Compute the true “current attempt number” and max attempts for the lead
@@ -371,8 +583,14 @@ r.post("/elevenlabs", async (req, res) => {
       });
       const currentAttemptNumber = attempt.attemptNumber;
       const attemptsOnLead = maxAttempt?.attemptNumber ?? currentAttemptNumber;
+      console.debug(
+        `[DEBUG] POST /elevenlabs: Current attempt: ${currentAttemptNumber}, Max attempts: ${attemptsOnLead}`
+      );
 
       // keep the lead in sync
+      console.debug(
+        `[DEBUG] POST /elevenlabs: Updating lead status for ${lead.id}`
+      );
       await prisma.lead.update({
         where: { id: lead.id },
         data: {
@@ -382,20 +600,29 @@ r.post("/elevenlabs", async (req, res) => {
           attempts: attemptsOnLead,
         },
       });
+      console.debug(`[DEBUG] POST /elevenlabs: Lead updated`);
 
       try {
         if (["ANSWERED", "NO_ANSWER"].includes(outcome)) {
+          console.debug(
+            `[DEBUG] POST /elevenlabs: Triggering notifications for outcome ${outcome}`
+          );
           await handleQuickAttemptNotifications({
             lead,
             attemptNumber: currentAttemptNumber,
             outcome,
           });
+          console.debug(`[DEBUG] POST /elevenlabs: Notifications triggered`);
         }
       } catch (e) {
         console.warn("[NOTIFY] attempt notifications failed", e?.message);
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Notification error: ${e.message}`
+        );
       }
 
       /** ---------- Push to external backend ---------- */
+      console.debug(`[DEBUG] POST /elevenlabs: Posting to external backend`);
       postToExternal({
         leadId: lead.id,
         fullName: lead.fullName,
@@ -418,13 +645,18 @@ r.post("/elevenlabs", async (req, res) => {
         dataCollectionsRaw,
         transcript: transcriptArr || [],
         raw: body,
-      }).catch(() => {});
+      }).catch((e) => {
+        console.debug(
+          `[DEBUG] POST /elevenlabs: External post error: ${e.message}`
+        );
+      });
 
-      // ---------- Retry (2-minute test cycle, window-safe) ----------
       // ---------- Retry (window-safe, idempotent, capped) ----------
       const retryable = ["FAILED", "NO_ANSWER", "VOICEMAIL"];
-
       if (retryable.includes(outcome) && currentAttemptNumber < MAX_ATTEMPTS) {
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Outcome ${outcome} is retryable, checking for next attempt`
+        );
         // Do NOT double-schedule if the next attempt already exists
         const nextAttemptExists = await prisma.callAttempt.findUnique({
           where: {
@@ -435,9 +667,15 @@ r.post("/elevenlabs", async (req, res) => {
           },
           select: { id: true },
         });
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Next attempt exists: ${
+            nextAttemptExists ? "yes" : "no"
+          }`
+        );
 
         if (!nextAttemptExists) {
           const tz = pickTz(lead.timezone || QUEBEC_TZ);
+          console.debug(`[DEBUG] POST /elevenlabs: Using timezone ${tz}`);
 
           // schedule RETRY_GAP_MINUTES from now in lead tz
           let nextM = moment()
@@ -445,16 +683,28 @@ r.post("/elevenlabs", async (req, res) => {
             .add(RETRY_GAP_MINUTES, "minutes")
             .second(0)
             .millisecond(0);
+          console.debug(
+            `[DEBUG] POST /elevenlabs: Initial retry time: ${nextM.format()}`
+          );
 
-          // clamp into business window quickly for tests
+          // clamp into business window
           const h = nextM.hour();
           const dow = nextM.day();
           if (dow === 0 || dow === 6 || h < START || h >= END) {
+            console.debug(
+              `[DEBUG] POST /elevenlabs: Time outside business hours, clamping`
+            );
             const insideUnix = await nextInsideWindowUnix(tz);
             nextM = moment.unix(insideUnix).tz(tz);
+            console.debug(
+              `[DEBUG] POST /elevenlabs: Clamped to: ${nextM.format()}`
+            );
           }
 
           const scheduledAt = nextM.toDate();
+          console.debug(
+            `[DEBUG] POST /elevenlabs: Scheduling retry at ${scheduledAt}`
+          );
 
           await prisma.callAttempt.create({
             data: {
@@ -465,6 +715,7 @@ r.post("/elevenlabs", async (req, res) => {
               payload: { schedule_reason: outcome, hangup_on_voicemail: true },
             },
           });
+          console.debug(`[DEBUG] POST /elevenlabs: Created retry attempt`);
 
           await prisma.lead.update({
             where: { id: lead.id },
@@ -474,6 +725,9 @@ r.post("/elevenlabs", async (req, res) => {
               attempts: currentAttemptNumber + 1,
             },
           });
+          console.debug(
+            `[DEBUG] POST /elevenlabs: Lead updated with retry schedule`
+          );
 
           console.log("[WEBHOOK] next attempt scheduled", {
             leadId: lead.id,
@@ -488,11 +742,14 @@ r.post("/elevenlabs", async (req, res) => {
         outcome,
         from_number,
         to_number,
-        attempts: attemptsOnLead, // or currentAttemptNumber
+        attempts: attemptsOnLead,
       });
+      console.debug(`[DEBUG] POST /elevenlabs: Structured processing complete`);
       return res.json({ ok: true });
     } // <-- CLOSE the structured branch here
+
     /** ---------- Fallback: flat payloads ---------- */
+    console.debug(`[DEBUG] POST /elevenlabs: Processing flat payload`);
     const statusMap = {
       answered: "ANSWERED",
       voicemail: "VOICEMAIL",
@@ -503,9 +760,17 @@ r.post("/elevenlabs", async (req, res) => {
     };
     const rawOutcome = String(body.outcome || "").toLowerCase();
     outcome = statusMap[rawOutcome] || "FAILED";
+    console.debug(
+      `[DEBUG] POST /elevenlabs: Flat outcome: ${outcome} from raw: ${rawOutcome}`
+    );
+
     to_number = normPhone(body.to_number || body.phone_number || null);
     leadId = Number(body?.metadata?.lead_id) || null;
     emailFromMeta = body?.metadata?.email || null;
+    console.debug(
+      `[DEBUG] POST /elevenlabs: to_number: ${to_number}, leadId: ${leadId}, emailFromMeta: ${emailFromMeta}`
+    );
+
     transcriptArr = Array.isArray(body?.transcript) ? body.transcript : null;
     transcriptStr = transcriptArr
       ? JSON.stringify(transcriptArr)
@@ -514,24 +779,51 @@ r.post("/elevenlabs", async (req, res) => {
       : null;
     if (transcriptStr && transcriptStr.length > 500_000) {
       transcriptStr = transcriptStr.slice(0, 500_000);
+      console.debug(
+        `[DEBUG] POST /elevenlabs: Flat transcript truncated to 500,000 chars`
+      );
     }
+    console.debug(
+      `[DEBUG] POST /elevenlabs: Flat transcript array length: ${transcriptArr?.length}, string length: ${transcriptStr?.length}`
+    );
+
     recordingUrl = body?.recording_url || null;
     startedAt = body?.started_at ? new Date(body.started_at) : null;
     endedAt = body?.ended_at ? new Date(body.ended_at) : new Date();
+    console.debug(
+      `[DEBUG] POST /elevenlabs: recordingUrl: ${recordingUrl}, startedAt: ${startedAt}, endedAt: ${endedAt}`
+    );
 
     let lead = null;
-    if (leadId) lead = await prisma.lead.findUnique({ where: { id: leadId } });
+    if (leadId) {
+      console.debug(
+        `[DEBUG] POST /elevenlabs: Fetching lead by ID: ${leadId} (flat)`
+      );
+      lead = await prisma.lead.findUnique({ where: { id: leadId } });
+      console.debug(
+        `[DEBUG] POST /elevenlabs: Lead found: ${
+          lead ? JSON.stringify(lead) : "null"
+        }`
+      );
+    }
 
     if (!lead) {
       console.warn("[WEBHOOK] lead not found (flat)", { leadId, to_number });
+      console.debug(
+        `[DEBUG] POST /elevenlabs: Lead not found (flat), returning 200`
+      );
       return res.status(200).json({ ok: true, note: "lead_not_found" });
     }
 
     if (emailFromMeta && (!lead.email || lead.email !== emailFromMeta)) {
+      console.debug(
+        `[DEBUG] POST /elevenlabs: Updating lead email to ${emailFromMeta} (flat)`
+      );
       await prisma.lead.update({
         where: { id: lead.id },
         data: { email: emailFromMeta },
       });
+      console.debug(`[DEBUG] POST /elevenlabs: Lead email updated (flat)`);
     }
 
     const lastAttempt = await prisma.callAttempt.findFirst({
@@ -539,6 +831,11 @@ r.post("/elevenlabs", async (req, res) => {
       orderBy: { attemptNumber: "desc" },
     });
     const nextAttemptNumber = (lastAttempt?.attemptNumber ?? 0) + 1;
+    console.debug(
+      `[DEBUG] POST /elevenlabs: Last attempt: ${
+        lastAttempt ? JSON.stringify(lastAttempt) : "null"
+      }, nextAttemptNumber: ${nextAttemptNumber}`
+    );
 
     await prisma.callAttempt.upsert({
       where: {
@@ -569,12 +866,18 @@ r.post("/elevenlabs", async (req, res) => {
         payload: body,
       },
     });
+    console.debug(`[DEBUG] POST /elevenlabs: Call attempt upserted`);
 
     const latest = await prisma.callAttempt.findFirst({
       where: { leadId: lead.id },
       orderBy: { attemptNumber: "desc" },
     });
     const attemptsCount = latest?.attemptNumber ?? 0;
+    console.debug(
+      `[DEBUG] POST /elevenlabs: Latest attempt: ${
+        latest ? JSON.stringify(latest) : "null"
+      }, attemptsCount: ${attemptsCount}`
+    );
 
     await prisma.lead.update({
       where: { id: lead.id },
@@ -585,31 +888,61 @@ r.post("/elevenlabs", async (req, res) => {
         attempts: attemptsCount,
       },
     });
+    console.debug(`[DEBUG] POST /elevenlabs: Lead updated (flat)`);
 
     try {
       if (outcome === "NO_ANSWER") {
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Triggering notifications for NO_ANSWER (flat)`
+        );
         await handleQuickAttemptNotifications({
           lead,
           attemptNumber: attemptsCount,
           outcome,
         });
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Notifications triggered (flat)`
+        );
       }
     } catch (e) {
       console.warn("[NOTIFY] attempt notifications failed (flat)", e?.message);
+      console.debug(
+        `[DEBUG] POST /elevenlabs: Notification error (flat): ${e.message}`
+      );
     }
 
     const dc = body?.analysis?.data_collection_results;
     function getDC(key) {
-      if (!dc) return null;
+      if (!dc) {
+        console.debug(
+          `[DEBUG] POST /elevenlabs: No data collections for key ${key}`
+        );
+        return null;
+      }
       if (Array.isArray(dc)) {
-        return dc.find((i) => i?.key === key || i?.name === key)?.value ?? null;
+        const value =
+          dc.find((i) => i?.key === key || i?.name === key)?.value ?? null;
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Array DC key ${key}: ${value}`
+        );
+        return value;
       }
       if (typeof dc === "object") {
-        return dc[key]?.value ?? dc[key] ?? null;
+        const value = dc[key]?.value ?? dc[key] ?? null;
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Object DC key ${key}: ${value}`
+        );
+        return value;
       }
+      console.debug(
+        `[DEBUG] POST /elevenlabs: Invalid DC format for key ${key}`
+      );
       return null;
     }
 
+    console.debug(
+      `[DEBUG] POST /elevenlabs: Posting to external backend (flat)`
+    );
     postToExternal({
       leadId: lead.id,
       fullName: lead.fullName,
@@ -634,24 +967,44 @@ r.post("/elevenlabs", async (req, res) => {
         transcriptArr ||
         (typeof body?.transcript === "string" ? body.transcript : null),
       raw: body,
-    }).catch(() => {});
+    }).catch((e) => {
+      console.debug(
+        `[DEBUG] POST /elevenlabs: External post error (flat): ${e.message}`
+      );
+    });
 
     // ---------- Retry (2-minute test cycle, window-safe) ----------
     if (
       ["FAILED", "NO_ANSWER", "VOICEMAIL"].includes(outcome) &&
       attemptsCount < 3
     ) {
+      console.debug(
+        `[DEBUG] POST /elevenlabs: Outcome ${outcome} is retryable, attemptsCount: ${attemptsCount}`
+      );
       const tz = pickTz(lead.timezone || QUEBEC_TZ);
+      console.debug(`[DEBUG] POST /elevenlabs: Using timezone ${tz} (flat)`);
 
       let nextM = moment().tz(tz).add(2, "minutes").second(0).millisecond(0);
+      console.debug(
+        `[DEBUG] POST /elevenlabs: Initial retry time (flat): ${nextM.format()}`
+      );
       const h = nextM.hour();
       const dow = nextM.day();
       if (dow === 0 || dow === 6 || h < START || h >= END) {
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Time outside business hours, clamping (flat)`
+        );
         const insideUnix = await nextInsideWindowUnix(tz);
         nextM = moment.unix(insideUnix).tz(tz);
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Clamped to: ${nextM.format()} (flat)`
+        );
       }
 
       const scheduledAt = nextM.toDate();
+      console.debug(
+        `[DEBUG] POST /elevenlabs: Scheduling retry at ${scheduledAt} (flat)`
+      );
 
       await prisma.callAttempt.upsert({
         where: {
@@ -669,6 +1022,7 @@ r.post("/elevenlabs", async (req, res) => {
         },
         update: { scheduledAt },
       });
+      console.debug(`[DEBUG] POST /elevenlabs: Retry attempt upserted (flat)`);
 
       await prisma.lead.update({
         where: { id: lead.id },
@@ -678,6 +1032,9 @@ r.post("/elevenlabs", async (req, res) => {
           attempts: attemptsCount + 1,
         },
       });
+      console.debug(
+        `[DEBUG] POST /elevenlabs: Lead updated with retry schedule (flat)`
+      );
 
       console.log("[WEBHOOK] next attempt scheduled (flat)", {
         leadId: lead.id,
@@ -691,9 +1048,11 @@ r.post("/elevenlabs", async (req, res) => {
       outcome,
       attempts: attemptsCount,
     });
+    console.debug(`[DEBUG] POST /elevenlabs: Flat processing complete`);
     return res.json({ ok: true });
   } catch (e) {
     console.error("[WEBHOOK error]", e);
+    console.debug(`[DEBUG] POST /elevenlabs: Error: ${e.message}`);
     // Keep 200 to avoid EL retries storms, but note the error
     return res.status(200).json({ ok: true, note: "error_swallowed_for_el" });
   }
