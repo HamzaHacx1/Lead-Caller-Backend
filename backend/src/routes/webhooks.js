@@ -758,6 +758,8 @@ r.post("/elevenlabs", async (req, res) => {
     } // <-- CLOSE the structured branch here
 
     /** ---------- Fallback: flat payloads ---------- */
+    /** ---------- Fallback: flat payloads ---------- */
+    /** ---------- Fallback: flat payloads ---------- */
     console.debug(`[DEBUG] POST /elevenlabs: Processing flat payload`);
     const statusMap = {
       answered: "ANSWERED",
@@ -835,69 +837,60 @@ r.post("/elevenlabs", async (req, res) => {
       console.debug(`[DEBUG] POST /elevenlabs: Lead email updated (flat)`);
     }
 
-    const lastAttempt = await prisma.callAttempt.findFirst({
+    const maxAttempt = await prisma.callAttempt.findFirst({
       where: { leadId: lead.id },
       orderBy: { attemptNumber: "desc" },
     });
-    const nextAttemptNumber = (lastAttempt?.attemptNumber ?? 0) + 1;
-    console.debug(
-      `[DEBUG] POST /elevenlabs: Last attempt: ${
-        lastAttempt ? JSON.stringify(lastAttempt) : "null"
-      }, nextAttemptNumber: ${nextAttemptNumber}`
-    );
+    const attemptsCount = maxAttempt?.attemptNumber ?? 0;
+    console.debug(`[DEBUG] POST /elevenlabs: Max attempts: ${attemptsCount}`);
 
-    await prisma.callAttempt.upsert({
-      where: {
-        leadId_attemptNumber: {
-          leadId: lead.id,
-          attemptNumber: nextAttemptNumber,
+    if (attemptsCount >= MAX_ATTEMPTS) {
+      console.warn(
+        `[WEBHOOK] Max attempts (${MAX_ATTEMPTS}) reached for lead ${lead.id}, no further retries scheduled`
+      );
+    } else {
+      await prisma.callAttempt.upsert({
+        where: {
+          leadId_attemptNumber: {
+            leadId: lead.id,
+            attemptNumber: attemptsCount + 1,
+          },
         },
-      },
-      create: {
-        leadId: lead.id,
-        attemptNumber: nextAttemptNumber,
-        status: outcome,
-        scheduledAt: new Date(),
-        startedAt: startedAt || null,
-        endedAt: endedAt || new Date(),
-        conversationId: convoId,
-        recordingUrl,
-        transcript: transcriptStr,
-        payload: body,
-      },
-      update: {
-        status: outcome,
-        startedAt: startedAt || undefined,
-        endedAt: endedAt || new Date(),
-        conversationId: convoId,
-        recordingUrl,
-        transcript: transcriptStr,
-        payload: body,
-      },
-    });
-    console.debug(`[DEBUG] POST /elevenlabs: Call attempt upserted`);
+        create: {
+          leadId: lead.id,
+          attemptNumber: attemptsCount + 1,
+          status: outcome,
+          scheduledAt: new Date(),
+          startedAt: startedAt || null,
+          endedAt: endedAt || new Date(),
+          conversationId: convoId,
+          recordingUrl,
+          transcript: transcriptStr,
+          payload: body,
+        },
+        update: {
+          status: outcome,
+          startedAt: startedAt || undefined,
+          endedAt: endedAt || new Date(),
+          conversationId: convoId,
+          recordingUrl,
+          transcript: transcriptStr,
+          payload: body,
+        },
+      });
+      console.debug(`[DEBUG] POST /elevenlabs: Call attempt upserted`);
 
-    const latest = await prisma.callAttempt.findFirst({
-      where: { leadId: lead.id },
-      orderBy: { attemptNumber: "desc" },
-    });
-    const attemptsCount = latest?.attemptNumber ?? 0;
-    console.debug(
-      `[DEBUG] POST /elevenlabs: Latest attempt: ${
-        latest ? JSON.stringify(latest) : "null"
-      }, attemptsCount: ${attemptsCount}`
-    );
-
-    await prisma.lead.update({
-      where: { id: lead.id },
-      data: {
-        status: outcome,
-        lastOutcome: outcome,
-        lastAttemptAt: new Date(),
-        attempts: attemptsCount,
-      },
-    });
-    console.debug(`[DEBUG] POST /elevenlabs: Lead updated (flat)`);
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: {
+          status: outcome,
+          lastOutcome: outcome,
+          lastAttemptAt: new Date(),
+          attempts: attemptsCount + 1,
+        },
+      });
+      console.debug(`[DEBUG] POST /elevenlabs: Lead updated (flat)`);
+    }
 
     try {
       if (outcome === "NO_ANSWER") {
@@ -906,7 +899,7 @@ r.post("/elevenlabs", async (req, res) => {
         );
         await handleQuickAttemptNotifications({
           lead,
-          attemptNumber: attemptsCount,
+          attemptNumber: attemptsCount + 1,
           outcome,
         });
         console.debug(
@@ -982,7 +975,6 @@ r.post("/elevenlabs", async (req, res) => {
       );
     });
 
-    // ---------- Retry (2-minute test cycle, window-safe) ----------
     if (
       ["FAILED", "NO_ANSWER", "VOICEMAIL"].includes(outcome) &&
       attemptsCount < MAX_ATTEMPTS
@@ -993,69 +985,85 @@ r.post("/elevenlabs", async (req, res) => {
       const tz = pickTz(lead.timezone || QUEBEC_TZ);
       console.debug(`[DEBUG] POST /elevenlabs: Using timezone ${tz} (flat)`);
 
-      // let nextM = moment().tz(tz).add(2, "minutes").second(0).millisecond(0);
-      // console.debug(
-      //   `[DEBUG] POST /elevenlabs: Initial retry time (flat): ${nextM.format()}`
-      // );
-      // const h = nextM.hour();
-      // const dow = nextM.day();
-      // if (dow === 0 || dow === 6 || h < START || h >= END) {
-      //   console.debug(
-      //     `[DEBUG] POST /elevenlabs: Time outside business hours, clamping (flat)`
-      //   );
-      //   const insideUnix = await nextInsideWindowUnix(tz);
-      //   nextM = moment.unix(insideUnix).tz(tz);
-      //   console.debug(
-      //     `[DEBUG] POST /elevenlabs: Clamped to: ${nextM.format()} (flat)`
-      //   );
-      // }
-
-      // schedule 4 minutes from now in lead tz (bypass business hours for testing)
-      let nextM = moment().tz(tz).add(4, "minutes").second(0).millisecond(0);
-      console.debug(
-        `[DEBUG] POST /elevenlabs: Initial retry time (flat): ${nextM.format()}`
-      );
-
-      const scheduledAt = nextM.toDate();
-      console.debug(
-        `[DEBUG] POST /elevenlabs: Scheduling retry at ${scheduledAt} (flat)`
-      );
-
-      await prisma.callAttempt.upsert({
+      const nextAttemptExists = await prisma.callAttempt.findUnique({
         where: {
           leadId_attemptNumber: {
             leadId: lead.id,
             attemptNumber: attemptsCount + 1,
           },
         },
-        create: {
-          leadId: lead.id,
-          attemptNumber: attemptsCount + 1,
-          status: "SCHEDULED",
-          scheduledAt,
-          payload: { schedule_reason: outcome, hangup_on_voicemail: true },
-        },
-        update: { scheduledAt },
-      });
-      console.debug(`[DEBUG] POST /elevenlabs: Retry attempt upserted (flat)`);
-
-      await prisma.lead.update({
-        where: { id: lead.id },
-        data: {
-          status: "SCHEDULED",
-          nextScheduledAt: scheduledAt,
-          attempts: attemptsCount + 1,
-        },
+        select: { id: true },
       });
       console.debug(
-        `[DEBUG] POST /elevenlabs: Lead updated with retry schedule (flat)`
+        `[DEBUG] POST /elevenlabs: Next attempt exists: ${
+          nextAttemptExists ? "yes" : "no"
+        }`
       );
 
-      console.log("[WEBHOOK] next attempt scheduled (flat)", {
-        leadId: lead.id,
-        attemptNumber: attemptsCount + 1,
-        when_local: nextM.format("YYYY-MM-DD HH:mm:ss z"),
-      });
+      if (!nextAttemptExists) {
+        let nextM = moment()
+          .tz(tz)
+          .add(RETRY_GAP_MINUTES, "minutes")
+          .second(0)
+          .millisecond(0);
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Initial retry time (flat): ${nextM.format()}`
+        );
+        const h = nextM.hour();
+        const dow = nextM.day();
+        if (dow === 0 || dow === 6 || h < START || h >= END) {
+          console.debug(
+            `[DEBUG] POST /elevenlabs: Time outside business hours, clamping (flat)`
+          );
+          const insideUnix = await nextInsideWindowUnix(tz);
+          nextM = moment.unix(insideUnix).tz(tz);
+          console.debug(
+            `[DEBUG] POST /elevenlabs: Clamped to: ${nextM.format()} (flat)`
+          );
+        }
+        const scheduledAt = nextM.toDate();
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Scheduling retry at ${scheduledAt} (flat)`
+        );
+
+        await prisma.callAttempt.upsert({
+          where: {
+            leadId_attemptNumber: {
+              leadId: lead.id,
+              attemptNumber: attemptsCount + 1,
+            },
+          },
+          create: {
+            leadId: lead.id,
+            attemptNumber: attemptsCount + 1,
+            status: "SCHEDULED",
+            scheduledAt,
+            payload: { schedule_reason: outcome, hangup_on_voicemail: true },
+          },
+          update: { scheduledAt },
+        });
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Retry attempt upserted (flat)`
+        );
+
+        await prisma.lead.update({
+          where: { id: lead.id },
+          data: {
+            status: "SCHEDULED",
+            nextScheduledAt: scheduledAt,
+            attempts: attemptsCount + 1,
+          },
+        });
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Lead updated with retry schedule (flat)`
+        );
+
+        console.log("[WEBHOOK] next attempt scheduled (flat)", {
+          leadId: lead.id,
+          attemptNumber: attemptsCount + 1,
+          when_local: nextM.format("YYYY-MM-DD HH:mm:ss z"),
+        });
+      }
     }
 
     console.log("[WEBHOOK] processed (flat):", {
