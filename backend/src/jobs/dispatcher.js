@@ -1,6 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 import sanitizeHtml from "sanitize-html";
 import moment from "moment-timezone";
+
 import { sendEmail, sendSMS } from "../helpers/notify.js";
 import { START, END, pickTz } from "../lib/schedule.js";
 import { callOutbound } from "../lib/elevenlabs.js";
@@ -228,6 +229,7 @@ async function claimOneDueLead(limitWindowCheck = true) {
         id: l.id,
         nextScheduledAt: l.nextScheduledAt,
         status: l.status,
+        metadata: l.metadata,
       }))
     )}`
   );
@@ -238,16 +240,18 @@ async function claimOneDueLead(limitWindowCheck = true) {
         lead.id
       }, nextScheduledAt=${lead.nextScheduledAt}, timezone=${
         lead.timezone || QUEBEC_TZ
-      }`
+      }, metadata.test=${lead.metadata?.test}`
     );
 
-    // guard against dialing outside window (bypassed for testing)
+    // Skip business hours check for test leads (metadata.test: true)
+    const isTestLead = lead.metadata?.test === true;
     if (
       limitWindowCheck &&
+      !isTestLead &&
       !insideWindow(new Date(), lead.timezone || QUEBEC_TZ)
     ) {
       console.debug(
-        `[DISPATCHER] claimOneDueLead: Skipped leadId=${lead.id}, Reason=Outside business hours`
+        `[DISPATCHER] claimOneDueLead: Skipped leadId=${lead.id}, Reason=Outside business hours, isTestLead=${isTestLead}`
       );
       continue;
     }
@@ -275,7 +279,11 @@ async function claimOneDueLead(limitWindowCheck = true) {
             lead.id
           }, State=${JSON.stringify(
             fresh
-              ? { status: fresh.status, nextScheduledAt: fresh.nextScheduledAt }
+              ? {
+                  status: fresh.status,
+                  nextScheduledAt: fresh.nextScheduledAt,
+                  metadata: fresh.metadata,
+                }
               : null
           )}`
         );
@@ -424,9 +432,8 @@ export async function runDispatcherOnce() {
   let madeProgress = false;
   for (let i = 0; i < 12; i++) {
     console.debug(`[DISPATCHER] runDispatcherOnce: Attempt ${i + 1}/12`);
-    // Bypass business hours check for testing
-    // const ok = await claimOneDueLead(true);
-    const ok = await claimOneDueLead(false); // Testing: ignore business hours
+    // Revert to original business hours check, except for test leads
+    const ok = await claimOneDueLead(true);
     if (!ok) {
       console.debug(
         `[DISPATCHER] runDispatcherOnce: No more leads to process on attempt ${
