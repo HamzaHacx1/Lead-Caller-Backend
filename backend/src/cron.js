@@ -2,7 +2,7 @@
 import dotenv from "dotenv";
 
 dotenv.config();
-
+import prisma from "./lib/prisma";
 import { processScheduledNotifications } from "./lib/notifications.js"; // note the .js
 
 // note the .js
@@ -28,10 +28,13 @@ async function main() {
     "ms"
   );
   // graceful shutdown
-  const stop = () => process.exit(0);
+  const stop = async () => {
+    await prisma.$disconnect();
+    console.log("Prisma connections closed");
+    process.exit(0);
+  };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
-
   // forever loop
   while (true) {
     await tick();

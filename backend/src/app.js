@@ -9,7 +9,7 @@ import morgan from "morgan";
 // src/server.js (ESM)
 import http from "http";
 import cors from "cors";
-
+import prisma from "./lib/prisma.js";
 import { startDispatcher } from "./jobs/dispatcher.js";
 import testApi from "./tests/notifications.js";
 import webhooks from "./routes/webhooks.js";
@@ -112,7 +112,11 @@ const stopDispatcher = startDispatcher();
 process.on("SIGINT", async () => {
   try {
     stopDispatcher?.();
-  } catch {}
+    await prisma.$disconnect(); // Close Prisma connections
+    console.log("Prisma connections closed");
+  } catch (err) {
+    console.error("Error during shutdown:", err);
+  }
   process.exit(0);
 });
 const PORT = process.env.PORT || 3001;
