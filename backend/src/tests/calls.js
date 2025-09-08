@@ -11,7 +11,7 @@ import {
 } from "../lib/schedule.js";
 import { processScheduledNotifications } from "../lib/notifications.js";
 // import { sendPreCallNudge } from "../jobs/dispatcher.js";
-import { callOutbound } from "../lib/elevenlabs.js";
+// dispatcher will handle outbound calls
 import { QUEBEC_TZ } from "../lib/quebecTime.js";
 import prisma from "../lib/prisma.js";
 
@@ -354,39 +354,9 @@ r.post("/call-now", async (req, res) => {
       return { lead, attempt, scheduledUnix };
     });
 
-    // // Optional: pre-call nudge using the real lead
-    // try {
-    //   await sendPreCallNudge(result.lead, 1);
-    // } catch (e) {
-    //   console.warn("[call-now] pre-call nudge error:", e?.message);
-    // }
-
-    // Kick off the call immediately (best-effort)
-    let convoId = null;
-    try {
-      const outbound = await callOutbound({
-        to: toNumber,
-        lead: {
-          id: result.lead.id,
-          email,
-          timezone: tz,
-          scheduledUnix: result.scheduledUnix,
-        },
-        attemptNumber: 1,
-        variables,
-        metadata: { source: "test_call_now" },
-      });
-      convoId = outbound?.conversation_id || null;
-
-      if (convoId) {
-        await prisma.callAttempt.update({
-          where: { id: result.attempt.id },
-          data: { conversationId: convoId },
-        });
-      }
-    } catch (e) {
-      console.warn("[call-now] outbound error:", e?.message);
-    }
+    // Do not place the call here. The dispatcher will pick this immediate
+    // attempt and handle pre-call nudges + outbound call.
+    const convoId = null;
 
     return res.json({
       ok: true,
@@ -399,7 +369,7 @@ r.post("/call-now", async (req, res) => {
         .tz(tz)
         .format("YYYY-MM-DD HH:mm:ss z"),
       tz,
-      note: "Immediate outbound triggered (window bypassed).",
+      note: "Dispatcher will place the call imminently (≈10s).",
     });
   } catch (e) {
     console.error("[/test/call-now] error", e);

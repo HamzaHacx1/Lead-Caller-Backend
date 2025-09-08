@@ -21,6 +21,11 @@ const TICK_MS = Math.max(
 );
 
 const PRECALL_ENABLED = (process.env.PRECALL_ENABLED ?? "1") === "1";
+// Optional delay between pre-call nudge and dialing (ms)
+const PRECALL_CALL_DELAY_MS = Math.max(
+  0,
+  Number(process.env.PRECALL_CALL_DELAY_MS ?? "15000")
+);
 
 const ZOMBIE_MINUTES = Number(process.env.DISPATCHER_ZOMBIE_MINUTES ?? "10");
 
@@ -192,6 +197,10 @@ async function claimOneDueLead(limitWindowCheck = true) {
       const allowed = await ensurePrecallOnce(lockedLead.id, attempt.id);
       if (allowed) {
         await sendPreCallNudge(lockedLead, attempt);
+        // Keep the advisory lock during this short delay to avoid races.
+        if (PRECALL_ENABLED && PRECALL_CALL_DELAY_MS > 0) {
+          await new Promise((r) => setTimeout(r, PRECALL_CALL_DELAY_MS));
+        }
       }
 
       await callOutbound({

@@ -1,13 +1,13 @@
-// src/cron.js  (or wherever yours lives)
 import dotenv from "dotenv";
 
 dotenv.config();
-import prisma from "./lib/prisma";
-import { processScheduledNotifications } from "./lib/notifications.js"; // note the .js
+// Ensure a tiny pool for this worker before loading Prisma-dependent modules
+process.env.PRISMA_POOL_SIZE = process.env.PRISMA_POOL_SIZE || "1";
 
-// note the .js
+const { processScheduledNotifications } = await import("./lib/notifications.js");
+const { default: prisma, disconnectPrisma } = await import("./lib/prisma.js");
 
-const INTERVAL_MS = 30_000; // run every 30s
+const INTERVAL_MS = 30_000; // 30 seconds
 
 async function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -15,7 +15,8 @@ async function sleep(ms) {
 
 async function tick() {
   try {
-    await processScheduledNotifications(200); // pick up due events
+    // Process fewer notifications to reduce load
+    await processScheduledNotifications(50); // Reduced from 200
   } catch (e) {
     console.warn("[cron] process error:", e?.message);
   }
@@ -27,15 +28,13 @@ async function main() {
     INTERVAL_MS,
     "ms"
   );
-  // graceful shutdown
   const stop = async () => {
-    await prisma.$disconnect();
-    console.log("Prisma connections closed");
+    await disconnectPrisma();
     process.exit(0);
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
-  // forever loop
+
   while (true) {
     await tick();
     await sleep(INTERVAL_MS);

@@ -10,7 +10,7 @@ import prisma from "../lib/prisma.js";
 
 // ---- dialing policy (tweak for prod/testing) ----
 const MAX_ATTEMPTS = 3; // total attempts per lead
-const RETRY_GAP_MINUTES = 10; // gap between attempts for distinct nudges
+const RETRY_GAP_MINUTES = 5; // gap between attempts for distinct nudges
 const FINAL_STATUSES = new Set([
   "ANSWERED",
   "NO_ANSWER",
@@ -700,10 +700,10 @@ r.post("/elevenlabs", async (req, res) => {
           //   );
           // }
 
-          // schedule 4 minutes from now in lead tz (bypass business hours for testing)
+          // schedule RETRY_GAP_MINUTES from now in lead tz (test-friendly)
           let nextM = moment()
             .tz(tz)
-            .add(4, "minutes")
+            .add(RETRY_GAP_MINUTES, "minutes")
             .second(0)
             .millisecond(0);
           console.debug(
