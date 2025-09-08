@@ -107,28 +107,61 @@ export async function sendPreCallNudge(lead, attempt) {
 
 async function resetZombies() {
   if (!ZOMBIE_MINUTES) return;
+
+  // Consider zombies only for current day in Québec time
+  const now = moment.tz(QUEBEC_TZ);
+  const startOfTodayQc = now.clone().startOf("day").toDate();
   const cutoff = new Date(Date.now() - ZOMBIE_MINUTES * 60 * 1000);
 
+  // Pick the single zombie whose nextScheduledAt is closest to now (most recent past)
   const zombies = await prisma.lead.findMany({
     where: {
       status: "IN_PROGRESS",
       lastProcessedAt: { lt: cutoff },
-      nextScheduledAt: { lte: new Date() },
+      nextScheduledAt: { gte: startOfTodayQc, lte: new Date() },
     },
-    take: 100,
+    orderBy: { nextScheduledAt: "desc" },
+    take: 1,
   });
 
   for (const z of zombies) {
     try {
-      await prisma.lead.update({
-        where: { id: z.id },
-        data: { status: "SCHEDULED" },
+      await prisma.$transaction(async (tx) => {
+        // Avoid racing with dispatcher by taking an xact advisory lock
+        const got =
+          await tx.$queryRaw`SELECT pg_try_advisory_xact_lock(${BigInt(
+            z.id
+          )}) AS ok;`;
+        if (!got?.[0]?.ok) return;
+
+        const fresh = await tx.lead.findUnique({ where: { id: z.id } });
+        if (!fresh) return;
+
+        // Re-check conditions inside the txn with today-only filter
+        if (
+          fresh.status !== "IN_PROGRESS" ||
+          !fresh.lastProcessedAt ||
+          !(fresh.lastProcessedAt < cutoff) ||
+          !fresh.nextScheduledAt ||
+          !(fresh.nextScheduledAt <= new Date()) ||
+          !(fresh.nextScheduledAt >= startOfTodayQc)
+        ) {
+          return;
+        }
+
+        await tx.lead.update({
+          where: { id: fresh.id },
+          data: { status: "SCHEDULED" },
+        });
       });
-    } catch (e) {}
+    } catch (e) {
+      // swallow; next cycle will retry
+    }
   }
 }
 
 async function claimOneDueLead(limitWindowCheck = true) {
+  // Primary path: use lead.nextScheduledAt as an index-friendly scan
   const candidates = await prisma.lead.findMany({
     where: {
       status: "SCHEDULED",
@@ -139,9 +172,18 @@ async function claimOneDueLead(limitWindowCheck = true) {
     take: 250,
   });
 
+  // Fallback path: if index field drifted, discover due attempts directly
+  let fallbackAttempts = [];
   if (candidates.length === 0) {
-    // Lightweight heartbeat
-    console.debug("[DISPATCHER] No due leads at", new Date().toISOString());
+    try {
+      fallbackAttempts = await prisma.callAttempt.findMany({
+        where: { status: "SCHEDULED", scheduledAt: { lte: new Date() } },
+        select: { id: true, leadId: true, attemptNumber: true, scheduledAt: true },
+        orderBy: [{ scheduledAt: "asc" }, { id: "asc" }],
+        take: 250,
+      });
+    } catch (e) {}
+    console.debug("[DISPATCHER] No due leads; due attempts fallback count:", fallbackAttempts.length);
   }
 
   for (const lead of candidates) {
@@ -253,12 +295,100 @@ async function claimOneDueLead(limitWindowCheck = true) {
     }
   }
 
+  // Fallback sweep using due attempts → lead
+  for (const a of fallbackAttempts) {
+    try {
+      const lead = await prisma.lead.findUnique({ where: { id: a.leadId } });
+      if (!lead) continue;
+
+      console.debug("[DISPATCHER:FALLBACK] Considering lead/attempt", {
+        id: lead.id,
+        attemptId: a.id,
+        attemptNumber: a.attemptNumber,
+        scheduledAt: a.scheduledAt,
+        status: lead.status,
+        nextScheduledAt: lead.nextScheduledAt,
+      });
+
+      const isTestLead = lead.metadata?.test === true;
+      if (
+        limitWindowCheck &&
+        !isTestLead &&
+        !insideWindow(new Date(), lead.timezone || QUEBEC_TZ)
+      ) {
+        continue;
+      }
+
+      const got = await prisma.$queryRaw`
+        SELECT pg_try_advisory_lock(${BigInt(lead.id)}) AS ok;
+      `;
+      if (!got?.[0]?.ok) continue;
+
+      try {
+        const claimed = await prisma.$transaction(async (tx) => {
+          const freshLead = await tx.lead.findUnique({ where: { id: lead.id } });
+          if (!freshLead || freshLead.status !== "SCHEDULED") return null;
+
+          const attempt = await tx.callAttempt.findFirst({
+            where: {
+              id: a.id,
+              leadId: freshLead.id,
+              status: "SCHEDULED",
+              scheduledAt: { lte: new Date() },
+            },
+          });
+          if (!attempt) return null;
+
+          await tx.lead.update({
+            where: { id: freshLead.id },
+            data: { status: "IN_PROGRESS", lastProcessedAt: new Date() },
+          });
+
+          return { freshLead, attempt };
+        });
+
+        if (!claimed) {
+          await prisma.$queryRaw`SELECT pg_advisory_unlock(${BigInt(lead.id)});`;
+          continue;
+        }
+
+        const { freshLead, attempt } = claimed;
+
+        const allowed = await ensurePrecallOnce(freshLead.id, attempt.id);
+        if (allowed) {
+          await sendPreCallNudge(freshLead, attempt);
+          if (PRECALL_ENABLED && PRECALL_CALL_DELAY_MS > 0) {
+            await new Promise((r) => setTimeout(r, PRECALL_CALL_DELAY_MS));
+          }
+        }
+
+        await callOutbound({
+          to: freshLead.phone,
+          lead: {
+            id: freshLead.id,
+            fullName: freshLead.fullName,
+            email: freshLead.email,
+            timezone: freshLead.timezone,
+            scheduledAt: attempt.scheduledAt,
+          },
+          attemptNumber: attempt.attemptNumber,
+          variables: {},
+          metadata: { source: "dispatcher", callAttemptId: attempt.id },
+        });
+
+        await prisma.$queryRaw`SELECT pg_advisory_unlock(${BigInt(lead.id)});`;
+        return true;
+      } catch (err) {
+        await prisma.$queryRaw`SELECT pg_advisory_unlock(${BigInt(lead.id)});`;
+      }
+    } catch (e) {}
+  }
+
   return false;
 }
 
 export async function runDispatcherOnce() {
-  await resetZombies();
-
+  // First, prioritize any due leads over cleanup work.
   let madeProgress = false;
   for (let i = 0; i < 12; i++) {
     const ok = await claimOneDueLead(true);
@@ -266,6 +396,15 @@ export async function runDispatcherOnce() {
     madeProgress = true;
     await new Promise((r) => setTimeout(r, scaleDelay(150)));
   }
+
+  // Only if nothing was due, perform a lightweight zombie sweep for today
+  // and try to claim again once.
+  if (!madeProgress) {
+    await resetZombies();
+    const ok = await claimOneDueLead(true);
+    madeProgress = madeProgress || ok;
+  }
+
   return madeProgress;
 }
 
