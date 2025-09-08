@@ -651,12 +651,12 @@ r.post("/elevenlabs", async (req, res) => {
       });
 
       // ---------- Retry (window-safe, idempotent, capped) ----------
+      // Retry (window-safe, idempotent, capped)
       const retryable = ["FAILED", "NO_ANSWER", "VOICEMAIL"];
       if (retryable.includes(outcome) && attemptsOnLead < MAX_ATTEMPTS) {
         console.debug(
           `[DEBUG] POST /elevenlabs: Outcome ${outcome} is retryable, checking for next attempt`
         );
-        // Do NOT double-schedule if the next attempt already exists
         const nextAttemptExists = await prisma.callAttempt.findUnique({
           where: {
             leadId_attemptNumber: {
@@ -676,39 +676,32 @@ r.post("/elevenlabs", async (req, res) => {
           const tz = pickTz(lead.timezone || QUEBEC_TZ);
           console.debug(`[DEBUG] POST /elevenlabs: Using timezone ${tz}`);
 
-          // // schedule RETRY_GAP_MINUTES from now in lead tz
-          // let nextM = moment()
-          //   .tz(tz)
-          //   .add(RETRY_GAP_MINUTES, "minutes")
-          //   .second(0)
-          //   .millisecond(0);
-          // console.debug(
-          //   `[DEBUG] POST /elevenlabs: Initial retry time: ${nextM.format()}`
-          // );
-
-          // // clamp into business window
-          // const h = nextM.hour();
-          // const dow = nextM.day();
-          // if (dow === 0 || dow === 6 || h < START || h >= END) {
-          //   console.debug(
-          //     `[DEBUG] POST /elevenlabs: Time outside business hours, clamping`
-          //   );
-          //   const insideUnix = await nextInsideWindowUnix(tz);
-          //   nextM = moment.unix(insideUnix).tz(tz);
-          //   console.debug(
-          //     `[DEBUG] POST /elevenlabs: Clamped to: ${nextM.format()}`
-          //   );
-          // }
-
-          // schedule 4 minutes from now in lead tz (bypass business hours for testing)
+          // Hardcode delay: 1 minute for first attempt, 4 minutes for others
+          const delayMinutes = currentAttemptNumber + 1 === 1 ? 1 : 4;
           let nextM = moment()
             .tz(tz)
-            .add(4, "minutes")
+            .add(delayMinutes, "minutes")
             .second(0)
             .millisecond(0);
           console.debug(
-            `[DEBUG] POST /elevenlabs: Initial retry time: ${nextM.format()}`
+            `[DEBUG] POST /elevenlabs: Initial retry time: ${nextM.format()} for attempt ${
+              currentAttemptNumber + 1
+            }`
           );
+
+          // Clamp into business window (optional for testing)
+          const h = nextM.hour();
+          const dow = nextM.day();
+          if (dow === 0 || dow === 6 || h < START || h >= END) {
+            console.debug(
+              `[DEBUG] POST /elevenlabs: Time outside business hours, clamping`
+            );
+            const insideUnix = await nextInsideWindowUnix(tz);
+            nextM = moment.unix(insideUnix).tz(tz);
+            console.debug(
+              `[DEBUG] POST /elevenlabs: Clamped to: ${nextM.format()}`
+            );
+          }
 
           const scheduledAt = nextM.toDate();
           console.debug(
@@ -745,7 +738,6 @@ r.post("/elevenlabs", async (req, res) => {
           });
         }
       }
-
       console.log("[WEBHOOK] processed (structured):", {
         leadId: lead.id,
         outcome,
@@ -1001,14 +993,19 @@ r.post("/elevenlabs", async (req, res) => {
       );
 
       if (!nextAttemptExists) {
+        // Hardcode delay: 1 minute for first attempt, 4 minutes for others
+        const delayMinutes = attemptsCount + 1 === 1 ? 1 : 4;
         let nextM = moment()
           .tz(tz)
-          .add(RETRY_GAP_MINUTES, "minutes")
+          .add(delayMinutes, "minutes")
           .second(0)
           .millisecond(0);
         console.debug(
-          `[DEBUG] POST /elevenlabs: Initial retry time (flat): ${nextM.format()}`
+          `[DEBUG] POST /elevenlabs: Initial retry time (flat): ${nextM.format()} for attempt ${
+            attemptsCount + 1
+          }`
         );
+
         const h = nextM.hour();
         const dow = nextM.day();
         if (dow === 0 || dow === 6 || h < START || h >= END) {
