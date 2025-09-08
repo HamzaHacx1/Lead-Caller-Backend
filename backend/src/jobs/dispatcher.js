@@ -139,13 +139,26 @@ async function claimOneDueLead(limitWindowCheck = true) {
     take: 250,
   });
 
+  if (candidates.length === 0) {
+    // Lightweight heartbeat
+    console.debug("[DISPATCHER] No due leads at", new Date().toISOString());
+  }
+
   for (const lead of candidates) {
+    console.debug("[DISPATCHER] Considering lead", {
+      id: lead.id,
+      nextScheduledAt: lead.nextScheduledAt,
+      attempts: lead.attempts,
+      tz: lead.timezone,
+      isTest: lead.metadata?.test === true,
+    });
     const isTestLead = lead.metadata?.test === true;
     if (
       limitWindowCheck &&
       !isTestLead &&
       !insideWindow(new Date(), lead.timezone || QUEBEC_TZ)
     ) {
+      console.debug("[DISPATCHER] Skipping (outside window)", { id: lead.id });
       continue;
     }
 
@@ -163,6 +176,11 @@ async function claimOneDueLead(limitWindowCheck = true) {
           fresh.status !== "SCHEDULED" ||
           fresh.nextScheduledAt > new Date()
         ) {
+          console.debug("[DISPATCHER] Skip inside tx (not due/status)", {
+            id: lead.id,
+            status: fresh.status,
+            nextScheduledAt: fresh.nextScheduledAt,
+          });
           return null;
         }
 
@@ -174,7 +192,10 @@ async function claimOneDueLead(limitWindowCheck = true) {
           },
           orderBy: [{ attemptNumber: "asc" }, { scheduledAt: "asc" }],
         });
-        if (!attempt) return null;
+        if (!attempt) {
+          console.debug("[DISPATCHER] No due attempt for lead", { id: lead.id });
+          return null;
+        }
 
         await tx.lead.update({
           where: { id: fresh.id },
@@ -184,6 +205,12 @@ async function claimOneDueLead(limitWindowCheck = true) {
           },
         });
 
+        console.debug("[DISPATCHER] Claimed lead", {
+          id: fresh.id,
+          attemptId: attempt.id,
+          attemptNumber: attempt.attemptNumber,
+          scheduledAt: attempt.scheduledAt,
+        });
         return { fresh, attempt };
       });
 
@@ -221,6 +248,7 @@ async function claimOneDueLead(limitWindowCheck = true) {
 
       return true;
     } catch (err) {
+      console.warn("[DISPATCHER] Error handling lead", lead.id, err?.message);
       await prisma.$queryRaw`SELECT pg_advisory_unlock(${BigInt(lead.id)});`;
     }
   }
