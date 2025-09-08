@@ -605,14 +605,14 @@ r.post("/elevenlabs", async (req, res) => {
       console.debug(`[DEBUG] POST /elevenlabs: Lead updated`);
 
       try {
-        if (["ANSWERED", "NO_ANSWER"].includes(outcome)) {
+        if (["ANSWERED", "NO_ANSWER", "FAILED"].includes(outcome)) {
           console.debug(
             `[DEBUG] POST /elevenlabs: Triggering notifications for outcome ${outcome}`
           );
           await handleQuickAttemptNotifications({
             lead,
             attemptNumber: currentAttemptNumber,
-            outcome,
+            outcome: outcome === "FAILED" ? "NO_ANSWER" : outcome,
           });
           console.debug(`[DEBUG] POST /elevenlabs: Notifications triggered`);
         }
@@ -900,14 +900,14 @@ r.post("/elevenlabs", async (req, res) => {
     }
 
     try {
-      if (outcome === "NO_ANSWER") {
+      if (["NO_ANSWER", "FAILED"].includes(outcome)) {
         console.debug(
-          `[DEBUG] POST /elevenlabs: Triggering notifications for NO_ANSWER (flat)`
+          `[DEBUG] POST /elevenlabs: Triggering notifications for outcome ${outcome} (flat)`
         );
         await handleQuickAttemptNotifications({
           lead,
           attemptNumber: attemptsCount + 1,
-          outcome,
+          outcome: outcome === "FAILED" ? "NO_ANSWER" : outcome,
         });
         console.debug(
           `[DEBUG] POST /elevenlabs: Notifications triggered (flat)`

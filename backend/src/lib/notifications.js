@@ -616,11 +616,11 @@ export async function handleAttemptNotifications({
     outcome,
   });
 
-  const valid = ["ANSWERED", "NO_ANSWER"];
+  const valid = ["ANSWERED", "NO_ANSWER", "FAILED"];
   if (!valid.includes(outcome)) {
     console.warn(`[NOTIFY] Invalid outcome ${outcome} for lead ${lead.id}`);
     console.debug(
-      `[DEBUG] handleAttemptNotifications: Invalid outcome ${outcome}, exiting`
+      `[DEBUG] handleQuickAttemptNotifications: Invalid outcome ${outcome}, exiting`
     );
     return;
   }
