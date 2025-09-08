@@ -13,7 +13,7 @@ import prisma from "../lib/prisma.js";
 
 // ---- dialing policy (tweak for prod/testing) ----
 const MAX_ATTEMPTS = 3; // total attempts per lead
-const RETRY_GAP_MINUTES = 2; // gap between attempts for distinct nudges
+const RETRY_GAP_MINUTES = 5; // gap between attempts for distinct nudges
 const FINAL_STATUSES = new Set([
   "ANSWERED",
   "NO_ANSWER",
