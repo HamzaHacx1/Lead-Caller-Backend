@@ -32,6 +32,8 @@ const PRECALL_CALL_DELAY_MS = Math.max(
 // ----------------------------------------------------------------------------
 let TICK_SEQ = 0;
 function logDisp(level, message, data) {
+  // Logs are disabled
+  return;
   const ts = new Date().toISOString();
   const base = `${ts} [DISPATCHER] [tick=${TICK_SEQ}] ${message}`;
   const line = data ? `${base} ${JSON.stringify(data)}` : base;
@@ -39,7 +41,6 @@ function logDisp(level, message, data) {
   else if (level === "warn") console.warn(line);
   else console.log(line);
 }
-
 
 function scaleDelay(ms) {
   const scaled = Math.max(0, Math.floor(ms / TIME_SCALE));
@@ -117,8 +118,6 @@ export async function sendPreCallNudge(lead, attempt) {
   }
 }
 
-
-
 async function claimOneDueLead(limitWindowCheck = true) {
   // Limit work to today (Québec time) to avoid calling old leads
   const startOfTodayQc = moment.tz(QUEBEC_TZ).startOf("day").toDate();
@@ -154,7 +153,9 @@ async function claimOneDueLead(limitWindowCheck = true) {
         take: 250,
       });
     } catch (e) {}
-    logDisp("info", "No due leads; scanning due attempts", { count: fallbackAttempts.length });
+    logDisp("info", "No due leads; scanning due attempts", {
+      count: fallbackAttempts.length,
+    });
   }
 
   for (const lead of candidates) {
@@ -301,7 +302,10 @@ async function claimOneDueLead(limitWindowCheck = true) {
 
       return true;
     } catch (err) {
-      logDisp("warn", "Error handling lead", { id: lead.id, error: err?.message });
+      logDisp("warn", "Error handling lead", {
+        id: lead.id,
+        error: err?.message,
+      });
       await prisma.$queryRaw`SELECT pg_advisory_unlock(${BigInt(lead.id)});`;
     }
   }
@@ -337,7 +341,9 @@ async function claimOneDueLead(limitWindowCheck = true) {
 
       try {
         const claimed = await prisma.$transaction(async (tx) => {
-          const freshLead = await tx.lead.findUnique({ where: { id: lead.id } });
+          const freshLead = await tx.lead.findUnique({
+            where: { id: lead.id },
+          });
           if (!freshLead || freshLead.status !== "SCHEDULED") return null;
 
           const attempt = await tx.callAttempt.findFirst({
@@ -359,7 +365,9 @@ async function claimOneDueLead(limitWindowCheck = true) {
         });
 
         if (!claimed) {
-          await prisma.$queryRaw`SELECT pg_advisory_unlock(${BigInt(lead.id)});`;
+          await prisma.$queryRaw`SELECT pg_advisory_unlock(${BigInt(
+            lead.id
+          )});`;
           continue;
         }
 

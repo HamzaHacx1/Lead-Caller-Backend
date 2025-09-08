@@ -97,11 +97,13 @@ async function ensureOnce(leadId, step) {
   );
   try {
     const result = await prisma.$transaction(async (tx) => {
-      console.debug(
-        `[DEBUG] ensureOnce: Starting transaction for leadId ${leadId}, step ${step}`
-      );
+      // Check for existing notification, ignore if older than 1 hour
       const existing = await tx.notificationEvent.findFirst({
-        where: { leadId, step },
+        where: {
+          leadId,
+          step,
+          createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) }, // Ignore records older than 1 hour
+        },
       });
       console.debug(
         `[DEBUG] ensureOnce: Existing notification: ${JSON.stringify(existing)}`
@@ -755,7 +757,9 @@ export async function handleQuickAttemptNotifications({
 
   if (outcome === "ANSWERED") {
     console.debug(
-      `[DEBUG] handleQuickAttemptNotifications: Outcome is ANSWERED, ${FAST_NOTIFY ? "sending immediately" : "scheduling quick notifications"}`
+      `[DEBUG] handleQuickAttemptNotifications: Outcome is ANSWERED, ${
+        FAST_NOTIFY ? "sending immediately" : "scheduling quick notifications"
+      }`
     );
     if (FAST_NOTIFY) {
       const steps = ["ANSWERED_15M", "ANSWERED_30M"];
@@ -764,11 +768,17 @@ export async function handleQuickAttemptNotifications({
           if (await ensureOnce(lead.id, `${step}_SENT`)) {
             await processQuickScheduledNotification(lead, step, attemptNumber);
             try {
-              console.log("[NOTIFY] sent", { leadId: lead.id, step, attemptNumber });
+              console.log("[NOTIFY] sent", {
+                leadId: lead.id,
+                step,
+                attemptNumber,
+              });
             } catch {}
           }
         } catch (e) {
-          console.warn(`[NOTIFY] immediate ANSWERED notify failed: ${e?.message}`);
+          console.warn(
+            `[NOTIFY] immediate ANSWERED notify failed: ${e?.message}`
+          );
         }
       }
     } else {
@@ -821,7 +831,11 @@ export async function handleQuickAttemptNotifications({
           },
         });
         try {
-          console.log("[NOTIFY] sent", { leadId: lead.id, step, attemptNumber });
+          console.log("[NOTIFY] sent", {
+            leadId: lead.id,
+            step,
+            attemptNumber,
+          });
         } catch {}
         console.debug(
           `[DEBUG] handleQuickAttemptNotifications: Immediate notification sent for attempt ${attemptNumber}`
