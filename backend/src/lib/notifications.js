@@ -135,6 +135,9 @@ async function ensureOnce(leadId, step) {
       `[NOTIFY] ensureOnce failed for ${leadId}/${step}: ${e.message}`
     );
     console.debug(`[DEBUG] ensureOnce: Error details: ${JSON.stringify(e)}`);
+    console.log(
+      `[NOTIFY] ensureOnce: Returning false for leadId ${leadId}, step ${step}, reason: ${e.message}`
+    );
     return false;
   }
 }
@@ -897,11 +900,11 @@ export async function handleQuickAttemptNotifications({
 // Worker to process due notifications (safe across multiple instances)
 // -----------------------------------------------------------------------------
 export async function processScheduledNotifications(limit = 500) {
-  console.debug(
-    `[DEBUG] processScheduledNotifications: Starting with limit ${limit}`
-  );
+  // console.debug(
+  //   `[DEBUG] processScheduledNotifications: Starting with limit ${limit}`
+  // );
   const now = new Date();
-  console.debug(`[DEBUG] processScheduledNotifications: Current time: ${now}`);
+  // console.debug(`[DEBUG] processScheduledNotifications: Current time: ${now}`);
 
   const notifications = await prisma.notificationEvent.findMany({
     where: {
@@ -925,9 +928,9 @@ export async function processScheduledNotifications(limit = 500) {
     take: limit,
     orderBy: { scheduledAt: "asc" },
   });
-  console.debug(
-    `[DEBUG] processScheduledNotifications: Found ${notifications.length} notifications`
-  );
+  // console.debug(
+  //   `[DEBUG] processScheduledNotifications: Found ${notifications.length} notifications`
+  // );
 
   for (const n of notifications) {
     console.debug(
