@@ -27,6 +27,19 @@ const PRECALL_CALL_DELAY_MS = Math.max(
   Number(process.env.PRECALL_CALL_DELAY_MS ?? "15000")
 );
 
+// ----------------------------------------------------------------------------
+// Lightweight structured logging to avoid confusing, overlapping console output
+// ----------------------------------------------------------------------------
+let TICK_SEQ = 0;
+function logDisp(level, message, data) {
+  const ts = new Date().toISOString();
+  const base = `${ts} [DISPATCHER] [tick=${TICK_SEQ}] ${message}`;
+  const line = data ? `${base} ${JSON.stringify(data)}` : base;
+  if (level === "error") console.error(line);
+  else if (level === "warn") console.warn(line);
+  else console.log(line);
+}
+
 const ZOMBIE_MINUTES = Number(process.env.DISPATCHER_ZOMBIE_MINUTES ?? "10");
 
 function scaleDelay(ms) {
@@ -183,11 +196,11 @@ async function claimOneDueLead(limitWindowCheck = true) {
         take: 250,
       });
     } catch (e) {}
-    console.debug("[DISPATCHER] No due leads; due attempts fallback count:", fallbackAttempts.length);
+    logDisp("info", "No due leads; scanning due attempts", { count: fallbackAttempts.length });
   }
 
   for (const lead of candidates) {
-    console.debug("[DISPATCHER] Considering lead", {
+    logDisp("info", "Considering lead", {
       id: lead.id,
       nextScheduledAt: lead.nextScheduledAt,
       attempts: lead.attempts,
@@ -200,7 +213,7 @@ async function claimOneDueLead(limitWindowCheck = true) {
       !isTestLead &&
       !insideWindow(new Date(), lead.timezone || QUEBEC_TZ)
     ) {
-      console.debug("[DISPATCHER] Skipping (outside window)", { id: lead.id });
+      logDisp("info", "Skipping (outside window)", { id: lead.id });
       continue;
     }
 
@@ -218,7 +231,7 @@ async function claimOneDueLead(limitWindowCheck = true) {
           fresh.status !== "SCHEDULED" ||
           fresh.nextScheduledAt > new Date()
         ) {
-          console.debug("[DISPATCHER] Skip inside tx (not due/status)", {
+          logDisp("info", "Skip inside tx (not due/status)", {
             id: lead.id,
             status: fresh.status,
             nextScheduledAt: fresh.nextScheduledAt,
@@ -235,7 +248,7 @@ async function claimOneDueLead(limitWindowCheck = true) {
           orderBy: [{ attemptNumber: "asc" }, { scheduledAt: "asc" }],
         });
         if (!attempt) {
-          console.debug("[DISPATCHER] No due attempt for lead", { id: lead.id });
+          logDisp("info", "No due attempt for lead", { id: lead.id });
           return null;
         }
 
@@ -247,7 +260,7 @@ async function claimOneDueLead(limitWindowCheck = true) {
           },
         });
 
-        console.debug("[DISPATCHER] Claimed lead", {
+        logDisp("info", "Claimed lead", {
           id: fresh.id,
           attemptId: attempt.id,
           attemptNumber: attempt.attemptNumber,
@@ -263,34 +276,73 @@ async function claimOneDueLead(limitWindowCheck = true) {
 
       const { fresh: lockedLead, attempt } = claimed;
 
-      const allowed = await ensurePrecallOnce(lockedLead.id, attempt.id);
-      if (allowed) {
-        await sendPreCallNudge(lockedLead, attempt);
-        // Keep the advisory lock during this short delay to avoid races.
-        if (PRECALL_ENABLED && PRECALL_CALL_DELAY_MS > 0) {
-          await new Promise((r) => setTimeout(r, PRECALL_CALL_DELAY_MS));
+      // Pre-call nudge only for the first attempt
+      if (PRECALL_ENABLED && attempt.attemptNumber === 1) {
+        const allowed = await ensurePrecallOnce(lockedLead.id, attempt.id);
+        if (allowed) {
+          try {
+            logDisp("info", "Precall nudge", {
+              id: lockedLead.id,
+              attemptId: attempt.id,
+              attemptNumber: attempt.attemptNumber,
+            });
+            await sendPreCallNudge(lockedLead, attempt);
+          } catch (e) {
+            logDisp("warn", "Precall nudge error", {
+              id: lockedLead.id,
+              attemptId: attempt.id,
+              error: e?.message,
+            });
+          }
+          // Keep the advisory lock during this short delay to avoid races.
+          if (PRECALL_CALL_DELAY_MS > 0) {
+            logDisp("info", "Precall delay", {
+              ms: PRECALL_CALL_DELAY_MS,
+              id: lockedLead.id,
+              attemptId: attempt.id,
+            });
+            await new Promise((r) => setTimeout(r, PRECALL_CALL_DELAY_MS));
+          }
         }
       }
 
-      await callOutbound({
-        to: lockedLead.phone,
-        lead: {
+      try {
+        logDisp("info", "Dial start", {
           id: lockedLead.id,
-          fullName: lockedLead.fullName,
-          email: lockedLead.email,
-          timezone: lockedLead.timezone,
-          scheduledAt: attempt.scheduledAt,
-        },
-        attemptNumber: attempt.attemptNumber,
-        variables: {},
-        metadata: { source: "dispatcher", callAttemptId: attempt.id },
-      });
+          attemptId: attempt.id,
+          attemptNumber: attempt.attemptNumber,
+          to: lockedLead.phone,
+        });
+        await callOutbound({
+          to: lockedLead.phone,
+          lead: {
+            id: lockedLead.id,
+            fullName: lockedLead.fullName,
+            email: lockedLead.email,
+            timezone: lockedLead.timezone,
+            scheduledAt: attempt.scheduledAt,
+          },
+          attemptNumber: attempt.attemptNumber,
+          variables: {},
+          metadata: { source: "dispatcher", callAttemptId: attempt.id },
+        });
+        logDisp("info", "Dial dispatched", {
+          id: lockedLead.id,
+          attemptId: attempt.id,
+        });
+      } catch (e) {
+        logDisp("warn", "Dial error", {
+          id: lockedLead.id,
+          attemptId: attempt.id,
+          error: e?.message,
+        });
+      }
 
       await prisma.$queryRaw`SELECT pg_advisory_unlock(${BigInt(lead.id)});`;
 
       return true;
     } catch (err) {
-      console.warn("[DISPATCHER] Error handling lead", lead.id, err?.message);
+      logDisp("warn", "Error handling lead", { id: lead.id, error: err?.message });
       await prisma.$queryRaw`SELECT pg_advisory_unlock(${BigInt(lead.id)});`;
     }
   }
@@ -301,7 +353,7 @@ async function claimOneDueLead(limitWindowCheck = true) {
       const lead = await prisma.lead.findUnique({ where: { id: a.leadId } });
       if (!lead) continue;
 
-      console.debug("[DISPATCHER:FALLBACK] Considering lead/attempt", {
+      logDisp("info", "[FALLBACK] Considering lead/attempt", {
         id: lead.id,
         attemptId: a.id,
         attemptNumber: a.attemptNumber,
@@ -354,11 +406,31 @@ async function claimOneDueLead(limitWindowCheck = true) {
 
         const { freshLead, attempt } = claimed;
 
-        const allowed = await ensurePrecallOnce(freshLead.id, attempt.id);
-        if (allowed) {
-          await sendPreCallNudge(freshLead, attempt);
-          if (PRECALL_ENABLED && PRECALL_CALL_DELAY_MS > 0) {
-            await new Promise((r) => setTimeout(r, PRECALL_CALL_DELAY_MS));
+        if (PRECALL_ENABLED && attempt.attemptNumber === 1) {
+          const allowed = await ensurePrecallOnce(freshLead.id, attempt.id);
+          if (allowed) {
+            try {
+              logDisp("info", "Precall nudge", {
+                id: freshLead.id,
+                attemptId: attempt.id,
+                attemptNumber: attempt.attemptNumber,
+              });
+              await sendPreCallNudge(freshLead, attempt);
+            } catch (e) {
+              logDisp("warn", "Precall nudge error", {
+                id: freshLead.id,
+                attemptId: attempt.id,
+                error: e?.message,
+              });
+            }
+            if (PRECALL_CALL_DELAY_MS > 0) {
+              logDisp("info", "Precall delay", {
+                ms: PRECALL_CALL_DELAY_MS,
+                id: freshLead.id,
+                attemptId: attempt.id,
+              });
+              await new Promise((r) => setTimeout(r, PRECALL_CALL_DELAY_MS));
+            }
           }
         }
 
@@ -388,6 +460,8 @@ async function claimOneDueLead(limitWindowCheck = true) {
 }
 
 export async function runDispatcherOnce() {
+  TICK_SEQ += 1;
+  logDisp("info", "Tick start", null);
   // First, prioritize any due leads over cleanup work.
   let madeProgress = false;
   for (let i = 0; i < 12; i++) {
@@ -404,7 +478,7 @@ export async function runDispatcherOnce() {
     const ok = await claimOneDueLead(true);
     madeProgress = madeProgress || ok;
   }
-
+  logDisp("info", "Tick end", { madeProgress });
   return madeProgress;
 }
 
