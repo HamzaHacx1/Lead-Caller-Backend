@@ -746,7 +746,7 @@ export async function handleQuickAttemptNotifications({
     outcome,
   });
 
-  const valid = ["ANSWERED", "NO_ANSWER"];
+  const valid = ["ANSWERED", "NO_ANSWER", "FAILED"]; // Added FAILED
   if (!valid.includes(outcome)) {
     console.warn(`[NOTIFY] Invalid outcome ${outcome} for lead ${lead.id}`);
     console.debug(
@@ -791,7 +791,11 @@ export async function handleQuickAttemptNotifications({
   }
 
   // TESTING: For testing, send NO_ANSWER_QUICK notifications immediately or schedule at 2-min intervals
-  if (outcome === "NO_ANSWER" && attemptNumber >= 1 && attemptNumber <= 3) {
+  if (
+    (outcome === "NO_ANSWER" || outcome === "FAILED") &&
+    attemptNumber >= 1 &&
+    attemptNumber <= 3
+  ) {
     const step = `AFTER_${attemptNumber}_NO_ANSWER_QUICK`;
     console.debug(
       `[DEBUG] handleQuickAttemptNotifications: Processing NO_ANSWER_QUICK step ${step}`
