@@ -4,7 +4,7 @@ import fetch from "node-fetch";
 import crypto from "crypto";
 
 import { nextInsideWindowUnix, START, END, pickTz } from "../lib/schedule.js";
-import { handleQuickAttemptNotifications } from "../lib/notifications.js";
+import { handleQuickAttemptNotifications, processScheduledNotifications } from "../lib/notifications.js";
 import { nowIn, QUEBEC_TZ } from "../lib/quebecTime.js";
 import prisma from "../lib/prisma.js";
 
@@ -753,6 +753,10 @@ r.post("/elevenlabs", async (req, res) => {
         to_number,
         attempts: attemptsOnLead,
       });
+      // For testing: process any due notifications immediately
+      try {
+        await processScheduledNotifications(200);
+      } catch (e) {}
       console.debug(`[DEBUG] POST /elevenlabs: Structured processing complete`);
       return res.json({ ok: true });
     } // <-- CLOSE the structured branch here
@@ -1071,6 +1075,10 @@ r.post("/elevenlabs", async (req, res) => {
       outcome,
       attempts: attemptsCount,
     });
+    // For testing: process any due notifications immediately
+    try {
+      await processScheduledNotifications(200);
+    } catch (e) {}
     console.debug(`[DEBUG] POST /elevenlabs: Flat processing complete`);
     return res.json({ ok: true });
   } catch (e) {

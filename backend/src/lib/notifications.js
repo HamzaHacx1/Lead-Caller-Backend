@@ -8,6 +8,7 @@ import { QUEBEC_TZ } from "../lib/quebecTime.js";
 import prisma from "./prisma.js";
 
 const { SUPPORT_NUMBER, APP_NAME = "EmploiRapide" } = process.env;
+const FAST_NOTIFY = (process.env.FAST_NOTIFY ?? "1") === "1"; // send immediately for testing
 const BOOKING_URL =
   process.env.BOOKING_URL || "https://emploirapide.ca/documents";
 
@@ -477,8 +478,8 @@ async function scheduleDelayedNotifications(lead) {
 
   // TESTING: For testing, schedule at 2-min intervals
   const plans = [
-    { step: "ANSWERED_24H", delayMs: 2 * 60 * 1000 }, // 2 minutes
-    { step: "ANSWERED_48H", delayMs: 4 * 60 * 1000 }, // 4 minutes
+    { step: "ANSWERED_24H", delayMs: FAST_NOTIFY ? 0 : 2 * 60 * 1000 },
+    { step: "ANSWERED_48H", delayMs: FAST_NOTIFY ? 0 : 4 * 60 * 1000 },
   ];
 
   for (const p of plans) {
@@ -539,8 +540,8 @@ async function scheduleQuickNotifications(lead) {
 
   // Keep step keys; shorten timings for quick tests
   const plans = [
-    { step: "ANSWERED_15M", delayMs: 3 * 60 * 1000 }, // 3 minutes
-    { step: "ANSWERED_30M", delayMs: 6 * 60 * 1000 }, // 6 minutes
+    { step: "ANSWERED_15M", delayMs: FAST_NOTIFY ? 0 : 3 * 60 * 1000 },
+    { step: "ANSWERED_30M", delayMs: FAST_NOTIFY ? 0 : 6 * 60 * 1000 },
   ];
 
   for (const p of plans) {
@@ -644,7 +645,7 @@ export async function handleAttemptNotifications({
       const copy = getAttemptCopy(step);
       const tz = pickTz(lead.timezone || QUEBEC_TZ);
       const now = moment().tz(tz);
-      const delayMs = (attemptNumber - 1) * 2 * 60 * 1000; // 0, 2, 4 minutes
+      const delayMs = FAST_NOTIFY ? 0 : (attemptNumber - 1) * 2 * 60 * 1000; // 0 for testing
       const scheduledAt = now.clone().add(delayMs, "milliseconds").toDate();
       console.debug(
         `[DEBUG] handleAttemptNotifications: Scheduling for ${scheduledAt}, delay: ${delayMs}ms`
@@ -754,12 +755,28 @@ export async function handleQuickAttemptNotifications({
 
   if (outcome === "ANSWERED") {
     console.debug(
-      `[DEBUG] handleQuickAttemptNotifications: Outcome is ANSWERED, scheduling quick notifications`
+      `[DEBUG] handleQuickAttemptNotifications: Outcome is ANSWERED, ${FAST_NOTIFY ? "sending immediately" : "scheduling quick notifications"}`
     );
-    await scheduleQuickNotifications(lead);
-    console.debug(
-      `[DEBUG] handleQuickAttemptNotifications: Quick notifications scheduled for leadId ${lead.id}`
-    );
+    if (FAST_NOTIFY) {
+      const steps = ["ANSWERED_15M", "ANSWERED_30M"];
+      for (const step of steps) {
+        try {
+          if (await ensureOnce(lead.id, `${step}_SENT`)) {
+            await processQuickScheduledNotification(lead, step, attemptNumber);
+            try {
+              console.log("[NOTIFY] sent", { leadId: lead.id, step, attemptNumber });
+            } catch {}
+          }
+        } catch (e) {
+          console.warn(`[NOTIFY] immediate ANSWERED notify failed: ${e?.message}`);
+        }
+      }
+    } else {
+      await scheduleQuickNotifications(lead);
+      console.debug(
+        `[DEBUG] handleQuickAttemptNotifications: Quick notifications scheduled for leadId ${lead.id}`
+      );
+    }
     return;
   }
 
@@ -776,7 +793,7 @@ export async function handleQuickAttemptNotifications({
       const copy = getAttemptCopy(step);
       const tz = pickTz(lead.timezone || QUEBEC_TZ);
       const now = moment().tz(tz);
-      const delayMs = (attemptNumber - 1) * 3 * 60 * 1000; // 0, 3, 6 minutes
+      const delayMs = FAST_NOTIFY ? 0 : (attemptNumber - 1) * 3 * 60 * 1000; // 0 for testing
       const scheduledAt = now.clone().add(delayMs, "milliseconds").toDate();
       console.debug(
         `[DEBUG] handleQuickAttemptNotifications: Scheduling for ${scheduledAt}, delay: ${delayMs}ms`
