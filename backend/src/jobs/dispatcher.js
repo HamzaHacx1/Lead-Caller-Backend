@@ -40,7 +40,6 @@ function logDisp(level, message, data) {
   else console.log(line);
 }
 
-const ZOMBIE_MINUTES = Number(process.env.DISPATCHER_ZOMBIE_MINUTES ?? "10");
 
 function scaleDelay(ms) {
   const scaled = Math.max(0, Math.floor(ms / TIME_SCALE));
@@ -118,80 +117,39 @@ export async function sendPreCallNudge(lead, attempt) {
   }
 }
 
-async function resetZombies() {
-  if (!ZOMBIE_MINUTES) return;
 
-  // Consider zombies only for current day in Québec time
-  const now = moment.tz(QUEBEC_TZ);
-  const startOfTodayQc = now.clone().startOf("day").toDate();
-  const cutoff = new Date(Date.now() - ZOMBIE_MINUTES * 60 * 1000);
-
-  // Pick the single zombie whose nextScheduledAt is closest to now (most recent past)
-  const zombies = await prisma.lead.findMany({
-    where: {
-      status: "IN_PROGRESS",
-      lastProcessedAt: { lt: cutoff },
-      nextScheduledAt: { gte: startOfTodayQc, lte: new Date() },
-    },
-    orderBy: { nextScheduledAt: "desc" },
-    take: 1,
-  });
-
-  for (const z of zombies) {
-    try {
-      await prisma.$transaction(async (tx) => {
-        // Avoid racing with dispatcher by taking an xact advisory lock
-        const got =
-          await tx.$queryRaw`SELECT pg_try_advisory_xact_lock(${BigInt(
-            z.id
-          )}) AS ok;`;
-        if (!got?.[0]?.ok) return;
-
-        const fresh = await tx.lead.findUnique({ where: { id: z.id } });
-        if (!fresh) return;
-
-        // Re-check conditions inside the txn with today-only filter
-        if (
-          fresh.status !== "IN_PROGRESS" ||
-          !fresh.lastProcessedAt ||
-          !(fresh.lastProcessedAt < cutoff) ||
-          !fresh.nextScheduledAt ||
-          !(fresh.nextScheduledAt <= new Date()) ||
-          !(fresh.nextScheduledAt >= startOfTodayQc)
-        ) {
-          return;
-        }
-
-        await tx.lead.update({
-          where: { id: fresh.id },
-          data: { status: "SCHEDULED" },
-        });
-      });
-    } catch (e) {
-      // swallow; next cycle will retry
-    }
-  }
-}
 
 async function claimOneDueLead(limitWindowCheck = true) {
-  // Primary path: use lead.nextScheduledAt as an index-friendly scan
+  // Limit work to today (Québec time) to avoid calling old leads
+  const startOfTodayQc = moment.tz(QUEBEC_TZ).startOf("day").toDate();
+
+  // Primary path: use lead.nextScheduledAt (today only) as an index-friendly scan
   const candidates = await prisma.lead.findMany({
     where: {
       status: "SCHEDULED",
-      nextScheduledAt: { lte: new Date() },
+      nextScheduledAt: { gte: startOfTodayQc, lte: new Date() },
       attempts: { gt: 0 },
     },
     orderBy: [{ nextScheduledAt: "asc" }, { id: "asc" }],
     take: 250,
   });
 
-  // Fallback path: if index field drifted, discover due attempts directly
+  // Fallback path: if index field drifted, discover due attempts directly (today only)
   let fallbackAttempts = [];
   if (candidates.length === 0) {
     try {
       fallbackAttempts = await prisma.callAttempt.findMany({
-        where: { status: "SCHEDULED", scheduledAt: { lte: new Date() } },
-        select: { id: true, leadId: true, attemptNumber: true, scheduledAt: true },
+        where: {
+          status: "SCHEDULED",
+          scheduledAt: { gte: startOfTodayQc, lte: new Date() },
+          lead: { status: "SCHEDULED", nextScheduledAt: { lte: new Date() } },
+        },
+        select: {
+          id: true,
+          leadId: true,
+          attemptNumber: true,
+          scheduledAt: true,
+        },
         orderBy: [{ scheduledAt: "asc" }, { id: "asc" }],
         take: 250,
       });
@@ -472,13 +430,7 @@ export async function runDispatcherOnce() {
     await new Promise((r) => setTimeout(r, scaleDelay(150)));
   }
 
-  // Only if nothing was due, perform a lightweight zombie sweep for today
-  // and try to claim again once.
-  if (!madeProgress) {
-    await resetZombies();
-    const ok = await claimOneDueLead(true);
-    madeProgress = madeProgress || ok;
-  }
+  // Zombie logic disabled for now
   logDisp("info", "Tick end", { madeProgress });
   return madeProgress;
 }

@@ -803,6 +803,9 @@ export async function handleQuickAttemptNotifications({
             closingText: copy.closingText,
           },
         });
+        try {
+          console.log("[NOTIFY] sent", { leadId: lead.id, step, attemptNumber });
+        } catch {}
         console.debug(
           `[DEBUG] handleQuickAttemptNotifications: Immediate notification sent for attempt ${attemptNumber}`
         );
@@ -1000,6 +1003,9 @@ async function processScheduledNotification(lead, step, attemptNumber) {
         closingText: copy.closingText,
       },
     });
+    try {
+      console.log("[NOTIFY] sent", { leadId: lead.id, step, attemptNumber });
+    } catch {}
     console.debug(
       `[DEBUG] processScheduledNotification: Notification sent for step ${step}`
     );
@@ -1071,6 +1077,9 @@ async function processNoAnswerScheduledNotification(lead, step, attemptNumber) {
         closingText: copy.closingText,
       },
     });
+    try {
+      console.log("[NOTIFY] sent", { leadId: lead.id, step, attemptNumber });
+    } catch {}
     console.debug(
       `[DEBUG] processNoAnswerScheduledNotification: Notification sent for step ${step}`
     );
