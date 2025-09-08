@@ -27,7 +27,8 @@ export async function callOutbound({
     (lead.scheduledAt
       ? Math.floor(new Date(lead.scheduledAt).getTime() / 1000)
       : null);
-  if (attemptNumber >= 3) {
+  // Allow up to 3 attempts; block only strictly beyond the cap
+  if (attemptNumber > 3) {
     return null;
   }
   const body = {

@@ -313,7 +313,7 @@ async function claimOneDueLead(limitWindowCheck = true) {
           attemptNumber: attempt.attemptNumber,
           to: lockedLead.phone,
         });
-        await callOutbound({
+        const result = await callOutbound({
           to: lockedLead.phone,
           lead: {
             id: lockedLead.id,
@@ -329,6 +329,7 @@ async function claimOneDueLead(limitWindowCheck = true) {
         logDisp("info", "Dial dispatched", {
           id: lockedLead.id,
           attemptId: attempt.id,
+          conversationId: result?.conversation_id || null,
         });
       } catch (e) {
         logDisp("warn", "Dial error", {
