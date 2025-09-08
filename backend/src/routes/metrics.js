@@ -1,7 +1,18 @@
 import { Router } from "express";
+import { PrismaClient } from "@prisma/client";
 
 import { assertJwt } from "../lib/auth.js";
-import prisma from "../lib/prisma.js";
+
+// Initialize Prisma with connection pool limit
+const prisma = new PrismaClient({
+  datasources: {
+    db: {
+      url: process.env.DATABASE_URL,
+    },
+  },
+  // Limit connections to avoid exhausting RDS
+  connection_limit: 10,
+});
 
 const r = Router();
 
@@ -13,16 +24,18 @@ function parseISODate(d) {
   const dt = new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00.000Z`);
   return Number.isNaN(dt.getTime()) ? null : dt;
 }
+
 function addDays(date, n) {
   const d = new Date(date);
   d.setUTCDate(d.getUTCDate() + n);
   return d;
 }
+
 function dateKeyUTC(d) {
   return d.toISOString().slice(0, 10); // YYYY-MM-DD
 }
+
 function clampRange(fromStr, toStr) {
-  // defaults: last 7 days including today
   const today = new Date();
   const todayUTC = new Date(
     Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate())
@@ -32,20 +45,37 @@ function clampRange(fromStr, toStr) {
   const from = parseISODate(fromStr) || defFrom;
   const to = parseISODate(toStr) || todayUTC;
 
-  // inclusive end → convert to [gte, lt nextDay]
   const lt = addDays(to, 1);
   return { from, lt };
 }
+
 function leadWhere({ from, lt, agent, outcome }) {
   const where = {
     createdAt: { gte: from, lt },
   };
   if (outcome) where.status = outcome;
   if (agent) {
-    // Filter leads that have at least one call attempt by this agent
     where.callAttempts = { some: { agentId: agent } };
   }
   return where;
+}
+
+/** ---------------- Retryable Prisma Query ---------------- */
+async function prismaQueryWithRetry(operation, maxRetries = 3, delay = 1000) {
+  let attempt = 0;
+  while (attempt < maxRetries) {
+    try {
+      return await operation();
+    } catch (e) {
+      if (e.message.includes("Too many database connections")) {
+        attempt++;
+        if (attempt === maxRetries) throw e;
+        await new Promise((r) => setTimeout(r, delay * Math.pow(2, attempt)));
+      } else {
+        throw e;
+      }
+    }
+  }
 }
 
 /** ---------------- endpoints ---------------- */
@@ -60,7 +90,6 @@ r.get("/summary", assertJwt, async (req, res) => {
 
     const whereBase = leadWhere({ from, lt, agent, outcome });
 
-    // Today range (UTC-based)
     const now = new Date();
     const todayUTC = new Date(
       Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
@@ -70,18 +99,26 @@ r.get("/summary", assertJwt, async (req, res) => {
       ...(agent ? { callAttempts: { some: { agentId: agent } } } : {}),
     };
 
-    const [todayLeads, answered, failed, noAnswer, voicemail] =
-      await Promise.all([
-        prisma.lead.count({ where: todayWhere }),
-        prisma.lead.count({ where: { ...whereBase, status: "ANSWERED" } }),
-        prisma.lead.count({ where: { ...whereBase, status: "FAILED" } }),
-        prisma.lead.count({ where: { ...whereBase, status: "NO_ANSWER" } }),
-        prisma.lead.count({ where: { ...whereBase, status: "VOICEMAIL" } }),
-      ]);
+    // Sequential queries to reduce connection demand
+    const todayLeads = await prismaQueryWithRetry(() =>
+      prisma.lead.count({ where: todayWhere })
+    );
+    const answered = await prismaQueryWithRetry(() =>
+      prisma.lead.count({ where: { ...whereBase, status: "ANSWERED" } })
+    );
+    const failed = await prismaQueryWithRetry(() =>
+      prisma.lead.count({ where: { ...whereBase, status: "FAILED" } })
+    );
+    const noAnswer = await prismaQueryWithRetry(() =>
+      prisma.lead.count({ where: { ...whereBase, status: "NO_ANSWER" } })
+    );
+    const voicemail = await prismaQueryWithRetry(() =>
+      prisma.lead.count({ where: { ...whereBase, status: "VOICEMAIL" } })
+    );
 
     res.json({ todayLeads, answered, failed, noAnswer, voicemail });
   } catch (e) {
-    console.error(e);
+    console.error("[METRICS] Summary error:", e);
     res.status(500).json({ error: "summary_failed" });
   }
 });
@@ -96,14 +133,14 @@ r.get("/timeseries", assertJwt, async (req, res) => {
 
     const where = leadWhere({ from, lt, agent, outcome });
 
-    // Pull only what we need and aggregate in JS (keeps it simple + Prisma-safe)
-    const leads = await prisma.lead.findMany({
-      where,
-      select: { createdAt: true, status: true },
-      orderBy: { createdAt: "asc" },
-    });
+    const leads = await prismaQueryWithRetry(() =>
+      prisma.lead.findMany({
+        where,
+        select: { createdAt: true, status: true },
+        orderBy: { createdAt: "asc" },
+      })
+    );
 
-    // Make empty buckets for every date in range
     const buckets = {};
     for (let d = new Date(from); d < lt; d = addDays(d, 1)) {
       buckets[dateKeyUTC(d)] = {
@@ -116,7 +153,6 @@ r.get("/timeseries", assertJwt, async (req, res) => {
       };
     }
 
-    // Fill buckets
     for (const l of leads) {
       const key = dateKeyUTC(
         new Date(
@@ -150,7 +186,7 @@ r.get("/timeseries", assertJwt, async (req, res) => {
 
     res.json(Object.values(buckets));
   } catch (e) {
-    console.error(e);
+    console.error("[METRICS] Timeseries error:", e);
     res.status(500).json({ error: "timeseries_failed" });
   }
 });
@@ -165,11 +201,12 @@ r.get("/outcomes", assertJwt, async (req, res) => {
 
     const where = leadWhere({ from, lt, agent, outcome });
 
-    // Pull statuses and count in JS (simple + portable)
-    const rows = await prisma.lead.findMany({
-      where,
-      select: { status: true },
-    });
+    const rows = await prismaQueryWithRetry(() =>
+      prisma.lead.findMany({
+        where,
+        select: { status: true },
+      })
+    );
 
     const counts = rows.reduce((acc, r) => {
       acc[r.status] = (acc[r.status] || 0) + 1;
@@ -183,7 +220,7 @@ r.get("/outcomes", assertJwt, async (req, res) => {
 
     res.json(result);
   } catch (e) {
-    console.error(e);
+    console.error("[METRICS] Outcomes error:", e);
     res.status(500).json({ error: "outcomes_failed" });
   }
 });
@@ -192,31 +229,54 @@ r.get("/outcomes", assertJwt, async (req, res) => {
 // GET /metrics/agents
 r.get("/agents", assertJwt, async (_req, res) => {
   try {
-    const agents = await prisma.agent.findMany({
-      select: { id: true, name: true },
-      orderBy: { name: "asc" },
-    });
+    const agents = await prismaQueryWithRetry(() =>
+      prisma.agent.findMany({
+        select: { id: true, name: true },
+        orderBy: { name: "asc" },
+      })
+    );
     res.json(agents);
   } catch (e) {
-    console.error(e);
+    console.error("[METRICS] Agents error:", e);
     res.status(500).json({ error: "agents_failed" });
   }
 });
 
 // (Optional) original endpoints retained for convenience
 r.get("/leads", assertJwt, async (_req, res) => {
-  const leads = await prisma.lead.findMany({
-    orderBy: { createdAt: "desc" },
-    take: 200,
-  });
-  res.json(leads);
+  try {
+    const leads = await prismaQueryWithRetry(() =>
+      prisma.lead.findMany({
+        orderBy: { createdAt: "desc" },
+        take: 200,
+      })
+    );
+    res.json(leads);
+  } catch (e) {
+    console.error("[METRICS] Leads error:", e);
+    res.status(500).json({ error: "leads_failed" });
+  }
 });
+
 r.get("/attempts", assertJwt, async (_req, res) => {
-  const attempts = await prisma.callAttempt.findMany({
-    orderBy: { createdAt: "desc" },
-    take: 200,
-  });
-  res.json(attempts);
+  try {
+    const attempts = await prismaQueryWithRetry(() =>
+      prisma.callAttempt.findMany({
+        orderBy: { createdAt: "desc" },
+        take: 200,
+      })
+    );
+    res.json(attempts);
+  } catch (e) {
+    console.error("[METRICS] Attempts error:", e);
+    res.status(500).json({ error: "attempts_failed" });
+  }
+});
+
+// Cleanup Prisma connections on shutdown
+process.on("SIGTERM", async () => {
+  await prisma.$disconnect();
+  process.exit(0);
 });
 
 export default r;
