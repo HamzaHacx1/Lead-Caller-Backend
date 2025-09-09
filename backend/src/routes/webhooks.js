@@ -142,58 +142,116 @@ function mapOutcomeFromTranscription(data) {
     `[DEBUG] mapOutcomeFromTranscription: call_successful: ${cs}, termination_reason: ${term}`
   );
 
-  // Treat any voicemail-related termination as a missed call (NO_ANSWER)
-  if (term.includes("voicemail")) {
-    console.debug(
-      `[DEBUG] mapOutcomeFromTranscription: Voicemail detected -> NO_ANSWER`
+  // Build helpers for transcript and features
+  const features = data.metadata?.features_usage || {};
+  const vmFeatureUsed =
+    features?.voicemail_detection?.used === true ||
+    String(features?.voicemail_detection?.used || "").toLowerCase() === "true";
+
+  const turns = Array.isArray(data.transcript) ? data.transcript : [];
+  const textOf = (m) =>
+    String(
+      m?.message ?? m?.original_message ?? m?.text ?? m?.transcript ?? m?.content ?? ""
     );
-    return "NO_ANSWER";
-  }
+  const speakerOf = (m) =>
+    String(m?.speaker ?? m?.role ?? m?.sender ?? m?.source ?? m?.speaker_name ?? "");
 
-  // If ElevenLabs marks the call as successful, count as ANSWERED
-  if (success) {
-    console.debug(`[DEBUG] mapOutcomeFromTranscription: Returning ANSWERED`);
-    return "ANSWERED";
-  }
-
-  // Heuristic: if transcript contains any human/user utterance, count as ANSWERED
+  // Detect human/user utterance anywhere in the call
+  let humanUtterance = false;
   try {
-    const t = Array.isArray(data.transcript) ? data.transcript : null;
-    if (t && t.length) {
-      const spokeByHuman = t.some((m) => {
-        const text = String(
-          m?.message ??
-            m?.original_message ??
-            m?.text ??
-            m?.transcript ??
-            m?.content ??
-            ""
-        ).trim();
-        const speakerRaw = String(
-          m?.speaker ?? m?.role ?? m?.sender ?? m?.source ?? m?.speaker_name ?? ""
-        ).toLowerCase();
-        const isAgent =
-          m?.is_agent === true || /\b(agent|assistant|ai|bot)\b/.test(speakerRaw);
-        const isHuman =
-          m?.is_agent === false ||
-          /\b(user|human|caller|lead|callee|customer|person)\b/.test(
-            speakerRaw
-          ) ||
-          speakerRaw === "user";
-        return !isAgent && isHuman && text.length >= 2;
-      });
-      if (spokeByHuman) {
-        console.debug(
-          `[DEBUG] mapOutcomeFromTranscription: Human utterance found -> ANSWERED`
-        );
-        return "ANSWERED";
-      }
-    }
+    humanUtterance = turns.some((m) => {
+      const text = textOf(m).trim();
+      const speakerRaw = speakerOf(m).toLowerCase();
+      const isAgent = m?.is_agent === true || /\b(agent|assistant|ai|bot)\b/.test(speakerRaw);
+      const isHuman =
+        m?.is_agent === false ||
+        speakerRaw === "user" ||
+        /\b(user|human|caller|lead|callee|customer|person)\b/.test(speakerRaw);
+      return !isAgent && isHuman && text.length >= 2;
+    });
   } catch (e) {
     console.debug(
       `[DEBUG] mapOutcomeFromTranscription: transcript check failed: ${e?.message}`
     );
   }
+
+  if (humanUtterance) {
+    console.debug(
+      `[DEBUG] mapOutcomeFromTranscription: Human utterance found -> ANSWERED`
+    );
+    if (LOG_SIGNALS) {
+      console.log("[EL DECISION]", { outcome: "ANSWERED", reason: "human_utterance" });
+    }
+    return "ANSWERED";
+  }
+
+  // If ElevenLabs marks the call as successful, count as ANSWERED
+  if (success) {
+    console.debug(`[DEBUG] mapOutcomeFromTranscription: Returning ANSWERED`);
+    if (LOG_SIGNALS) {
+      console.log("[EL DECISION]", { outcome: "ANSWERED", reason: "success_flag" });
+    }
+    return "ANSWERED";
+  }
+
+  // Direct voicemail detection using termination, features, or transcript hints
+  const VM_PATTERNS = [
+    "voicemail",
+    "answering machine",
+    "mailbox",
+    "leave a message",
+    "after the tone",
+    "after the beep",
+    "record your message",
+    // French
+    "boite vocale",
+    "boîte vocale",
+    "messagerie vocale",
+    "laissez un message",
+    "apres le bip",
+    "après le bip",
+    "apres le signal sonore",
+    "après le signal sonore",
+  ];
+  const termHasVm = VM_PATTERNS.some((p) => term.includes(p));
+  const transcriptHasVm = turns.some((m) =>
+    VM_PATTERNS.some((p) => textOf(m).toLowerCase().includes(p))
+  );
+  const LOG_SIGNALS = (process.env.LOG_EL_SIGNALS ?? "0") === "1";
+  if (LOG_SIGNALS) {
+    try {
+      console.log("[EL SIGNALS]", {
+        conversation_id: data.conversation_id || null,
+        call_successful: cs,
+        success,
+        termination_reason: term,
+        call_duration_secs: callDur,
+        vmFeatureUsed,
+        termHasVm,
+        transcriptHasVm,
+        humanUtterance,
+        turnsCount: turns.length,
+        firstTwo: turns.slice(0, 2).map((t) => ({
+          role: speakerOf(t) || t?.role || null,
+          text: textOf(t).slice(0, 160),
+        })),
+      });
+    } catch {}
+  }
+  if (vmFeatureUsed || termHasVm || transcriptHasVm) {
+    console.debug(
+      `[DEBUG] mapOutcomeFromTranscription: Voicemail detected -> NO_ANSWER`
+    );
+    if (LOG_SIGNALS) {
+      console.log("[EL DECISION]", {
+        outcome: "NO_ANSWER",
+        reason: "vm_signals",
+      });
+    }
+    return "NO_ANSWER";
+  }
+
+  // (success already handled above)
 
   // If remote party ended the call without any detected human utterance,
   // treat it as NO_ANSWER rather than FAILED (user likely hung up immediately).
@@ -201,6 +259,13 @@ function mapOutcomeFromTranscription(data) {
     console.debug(
       `[DEBUG] mapOutcomeFromTranscription: remote party hangup -> NO_ANSWER (dur=${callDur}s)`
     );
+    if (LOG_SIGNALS) {
+      console.log("[EL DECISION]", {
+        outcome: "NO_ANSWER",
+        reason: "remote_party_no_human",
+        call_duration_secs: callDur,
+      });
+    }
     return "NO_ANSWER";
   }
 
@@ -212,6 +277,12 @@ function mapOutcomeFromTranscription(data) {
     term.includes("busy")
   ) {
     console.debug(`[DEBUG] mapOutcomeFromTranscription: Returning NO_ANSWER`);
+    if (LOG_SIGNALS) {
+      console.log("[EL DECISION]", {
+        outcome: "NO_ANSWER",
+        reason: "no_answer_or_silence_or_busy",
+      });
+    }
     return "NO_ANSWER";
   }
   if (
@@ -220,9 +291,15 @@ function mapOutcomeFromTranscription(data) {
     term.includes("failed")
   ) {
     console.debug(`[DEBUG] mapOutcomeFromTranscription: Returning FAILED`);
+    if (LOG_SIGNALS) {
+      console.log("[EL DECISION]", { outcome: "FAILED", reason: "error_or_failed" });
+    }
     return "FAILED";
   }
   console.debug(`[DEBUG] mapOutcomeFromTranscription: Defaulting to FAILED`);
+  if (LOG_SIGNALS) {
+    console.log("[EL DECISION]", { outcome: "FAILED", reason: "default_fallback" });
+  }
   return "FAILED";
 }
 
@@ -864,6 +941,9 @@ r.post("/elevenlabs", async (req, res) => {
     const statusMap = {
       answered: "ANSWERED",
       voicemail: "NO_ANSWER",
+      answering_machine: "NO_ANSWER",
+      "answering-machine": "NO_ANSWER",
+      machine: "NO_ANSWER",
       "no-answer": "NO_ANSWER",
       no_answer: "NO_ANSWER",
       noanswer: "NO_ANSWER",
@@ -874,6 +954,17 @@ r.post("/elevenlabs", async (req, res) => {
     console.debug(
       `[DEBUG] POST /elevenlabs: Flat outcome: ${outcome} from raw: ${rawOutcome}`
     );
+    try {
+      const LOG_SIGNALS = (process.env.LOG_EL_SIGNALS ?? "0") === "1";
+      if (LOG_SIGNALS) {
+        console.log("[EL DECISION][flat]", {
+          outcome,
+          rawOutcome,
+          transcript_present: Boolean(body?.transcript),
+          transcript_type: Array.isArray(body?.transcript) ? "array" : typeof body?.transcript,
+        });
+      }
+    } catch {}
 
     to_number = normPhone(body.to_number || body.phone_number || null);
     leadId = Number(body?.metadata?.lead_id) || null;
