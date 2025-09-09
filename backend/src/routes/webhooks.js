@@ -717,7 +717,7 @@ r.post("/elevenlabs", async (req, res) => {
       });
 
       // ---------- Next attempt policy (next working day) ----------
-      const scheduleNext = ["FAILED", "NO_ANSWER", "VOICEMAIL", "ANSWERED"].includes(
+      const scheduleNext = ["FAILED", "NO_ANSWER", "VOICEMAIL"].includes(
         outcome
       );
       if (scheduleNext && attemptsOnLead < MAX_ATTEMPTS) {
@@ -1036,7 +1036,7 @@ r.post("/elevenlabs", async (req, res) => {
       );
     });
 
-    if (["FAILED", "NO_ANSWER", "VOICEMAIL", "ANSWERED"].includes(outcome) && attemptsCount < MAX_ATTEMPTS) {
+    if (["FAILED", "NO_ANSWER", "VOICEMAIL"].includes(outcome) && attemptsCount < MAX_ATTEMPTS) {
       console.debug(
         `[DEBUG] POST /elevenlabs: Scheduling next-day attempt (flat), attemptsCount: ${attemptsCount}`
       );
