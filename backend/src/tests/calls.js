@@ -15,6 +15,8 @@ import { processScheduledNotifications } from "../lib/notifications.js";
 import { QUEBEC_TZ } from "../lib/quebecTime.js";
 import prisma from "../lib/prisma.js";
 import { enqueueCallForAttempt } from "../lib/calls.js";
+import { getNotificationQueue } from "../lib/redisQueue.js";
+import { sendEmail, sendSMS } from "../helpers/notify.js";
 
 const r = Router();
 
@@ -380,6 +382,74 @@ r.post("/call-now", async (req, res) => {
 
   const convoId = null;
 
+    // Instant first: send both Email and SMS now, then schedule quick steps
+    try {
+      const BOOKING_URL =
+        process.env.BOOKING_URL || process.env.DASHBOARD_URL || "https://emploirapide.ca/documents";
+      // Email (simple pre-call nudge copy)
+      if (email && /\S+@\S+\.\S+/.test(String(email))) {
+        const html = `
+          <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.55;color:#0f172a">
+            <p>Salut!</p>
+            <p>Tu viens de remplir notre formulaire pour trouver un emploi rapidement.</p>
+            <p><strong>Bonne nouvelle : t'es à 1 clic de finaliser ton inscription.</strong></p>
+            <p>Clique ici pour compléter ton profil (3 minutes max) :</p>
+            <p style="margin:16px 0">
+              <a href="${BOOKING_URL}" target="_blank" rel="noopener"
+                 style="display:inline-block;background:#111827;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:600">
+                INSCRIPTION ICI
+              </a>
+            </p>
+            <p>Tout est fait pour aller vite. On s'occupe de tout.</p>
+          </div>`;
+        try { await sendEmail({ to: String(email).trim(), subject: "Tu veux un job ? Il te reste une seule étape !", html }); } catch {}
+      }
+      // SMS
+      if (phone && String(phone).replace(/[^\d+]/g, "").length >= 10) {
+        const smsBody = `Salut, c'est Simon d'Emploi Rapide — je viens de t'envoyer un courriel important. Va le voir maintenant.`;
+        try { await sendSMS({ to: String(phone).trim(), body: smsBody }); } catch {}
+      }
+    } catch {}
+
+    // Schedule quick answered steps for testing (15m and 30m)
+    try {
+      const isTest = true;
+      const A1 = isTest ? Number(process.env.TEST_ANSWERED_DELAY_MS_1 ?? 90_000) : 15 * 60 * 1000;
+      const A2 = isTest ? Number(process.env.TEST_ANSWERED_DELAY_MS_2 ?? 180_000) : 30 * 60 * 1000;
+      const queueEnabled = (process.env.NOTIFY_QUEUE_ENABLED ?? "1") === "1";
+      if (queueEnabled) {
+        const queue = getNotificationQueue();
+        await queue.add(
+          "notify-step",
+          { leadId: result.lead.id, step: "ANSWERED_15M", attemptNumber: 1 },
+          { delay: Math.max(0, A1), jobId: `lead:${result.lead.id}:step:ANSWERED_15M` }
+        );
+        await queue.add(
+          "notify-step",
+          { leadId: result.lead.id, step: "ANSWERED_30M", attemptNumber: 1 },
+          { delay: Math.max(0, A2), jobId: `lead:${result.lead.id}:step:ANSWERED_30M` }
+        );
+      } else {
+        // Fallback: persist DB events so /test/notifications/run can process them
+        await prisma.notificationEvent.create({
+          data: {
+            leadId: result.lead.id,
+            step: "ANSWERED_15M",
+            scheduledAt: new Date(Date.now() + Math.max(0, A1)),
+            metadata: { attemptNumber: 1 },
+          },
+        });
+        await prisma.notificationEvent.create({
+          data: {
+            leadId: result.lead.id,
+            step: "ANSWERED_30M",
+            scheduledAt: new Date(Date.now() + Math.max(0, A2)),
+            metadata: { attemptNumber: 1 },
+          },
+        });
+      }
+    } catch {}
+
     return res.json({
       ok: true,
       leadId: result.lead.id,
@@ -391,7 +461,7 @@ r.post("/call-now", async (req, res) => {
         .tz(tz)
         .format("YYYY-MM-DD HH:mm:ss z"),
       tz,
-      note: "Call scheduled ~6 minutes from now; pre-nudge 5 minutes before.",
+      note: "Instant email+SMS sent. Quick steps (15m, 30m) scheduled. Call scheduled ~6 minutes from now; pre-nudge 5 minutes before.",
     });
   } catch (e) {
     console.error("[/test/call-now] error", e);
