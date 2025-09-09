@@ -1,0 +1,71 @@
+      );
+      await prisma.notificationEvent.delete({ where: { id: n.id } });
+      console.debug(
+        `[DEBUG] processScheduledNotifications: Notification id ${n.id} deleted`
+      );
+    } catch (e) {
+      console.warn(
+        `[NOTIFY] processScheduledNotifications error id=${n.id}: ${e.message}`
+      );
+      console.debug(
+        `[DEBUG] processScheduledNotifications: Error details: ${JSON.stringify(
+          e
+        )}`
+      );
+    }
+  }
+}
+
+// -----------------------------------------------------------------------------
+// BullMQ worker entrypoint: run a single scheduled step (idempotent)
+// -----------------------------------------------------------------------------
+export async function runScheduledNotificationJob({
+  leadId,
+  step,
+  attemptNumber = 1,
+  eventId = null,
+}) {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId } });
+  if (!lead) return;
+
+  if (["ANSWERED_24H", "ANSWERED_48H"].includes(step)) {
+    await processScheduledNotification(lead, step, attemptNumber);
+  } else if (["ANSWERED_15M", "ANSWERED_30M"].includes(step)) {
+    await processQuickScheduledNotification(lead, step, attemptNumber);
+  } else if (["AFTER_2_NO_ANSWER", "AFTER_3_NO_ANSWER"].includes(step)) {
+    await processNoAnswerScheduledNotification(lead, step, attemptNumber);
+  } else if (
+    ["AFTER_2_NO_ANSWER_QUICK", "AFTER_3_NO_ANSWER_QUICK"].includes(step)
+  ) {
+    await processNoAnswerQuickScheduledNotification(lead, step, attemptNumber);
+  } else {
+    return; // Unknown step
+  }
+
+  // Best-effort cleanup of DB event row, if referenced
+  if (eventId) {
+    try {
+      await prisma.notificationEvent.delete({ where: { id: eventId } });
+    } catch (_) {}
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Internal processors (use _SENT marker to prevent duplicates)
+// -----------------------------------------------------------------------------
+async function processScheduledNotification(lead, step, attemptNumber) {
+  console.debug(
+    `[DEBUG] processScheduledNotification: Processing for leadId ${lead.id}, step ${step}, attemptNumber ${attemptNumber}`
+  );
+  if (await ensureOnce(lead.id, `${step}_SENT`)) {
+    console.debug(
+      `[DEBUG] processScheduledNotification: Idempotency check passed for ${step}_SENT`
+    );
+    const copy = getAttemptCopy(step, true);
+    await sendEmailAndSMS({
+      lead,
+      subject: copy.subject,
+      smsBody: copy.smsBody,
+      skipEmail: false,
+      context: {
+        attemptNumber,

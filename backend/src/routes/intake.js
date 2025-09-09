@@ -116,12 +116,10 @@ r.post("/facebook", async (req, res) => {
     //  - else: 2m from now if inside window, otherwise next window start
     let targetUnix;
     if (ignoreWindow || forceNow) {
-      targetUnix = (
-        ignoreWindow ? nowLocal : nowLocal.clone().add(2, "minutes")
-      ).unix();
+      targetUnix = nowLocal.clone().add(6, "minutes").unix();
     } else {
       targetUnix = insideWindowNow
-        ? nowLocal.clone().add(2, "minutes").unix()
+        ? nowLocal.clone().add(6, "minutes").unix()
         : nextInsideWindowUnix(tzForLead);
     }
 

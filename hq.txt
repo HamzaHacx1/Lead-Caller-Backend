@@ -1,0 +1,142 @@
+}
+import sanitizeHtml from "sanitize-html";
+import moment from "moment-timezone";
+
+import { renderTemplate as renderHbsFile } from "../helpers/renderTemplates.js";
+import { sendEmail, sendSMS } from "../helpers/notify.js";
+import { START, END, pickTz } from "../lib/schedule.js";
+import { QUEBEC_TZ } from "../lib/quebecTime.js";
+import prisma from "./prisma.js";
+import { getNotificationQueue } from "../lib/redisQueue.js";
+
+const { SUPPORT_NUMBER, APP_NAME = "EmploiRapide" } = process.env;
+const FAST_NOTIFY = (process.env.FAST_NOTIFY ?? "1") === "1"; // send immediately for testing
+// Configurable delays (ms)
+const ANSWERED_DELAY_MS_1 = Number(process.env.ANSWERED_DELAY_MS_1 ?? 15 * 60 * 1000);
+const ANSWERED_DELAY_MS_2 = Number(process.env.ANSWERED_DELAY_MS_2 ?? 30 * 60 * 1000);
+const NO_ANSWER_DELAY_MS_1 = Number(process.env.NO_ANSWER_DELAY_MS_1 ?? 10 * 60 * 1000);
+const NO_ANSWER_DELAY_MS_2 = Number(process.env.NO_ANSWER_DELAY_MS_2 ?? 10 * 60 * 1000);
+const NO_ANSWER_DELAY_MS_3 = Number(process.env.NO_ANSWER_DELAY_MS_3 ?? 10 * 60 * 1000);
+const BOOKING_URL =
+  process.env.BOOKING_URL || "https://emploirapide.ca/documents";
+
+// -----------------------------------------------------------------------------
+// Window helpers (lead's timezone, not hardcoded Québec)
+// -----------------------------------------------------------------------------
+function isWeekendAt(date, tz) {
+  console.debug(
+    `[DEBUG] isWeekendAt: Checking if ${date} in timezone ${tz} is a weekend`
+  );
+  const d = moment(date).tz(tz).day();
+  const isWeekend = d === 0 || d === 6;
+  console.debug(`[DEBUG] isWeekendAt: Day is ${d}, isWeekend: ${isWeekend}`);
+  return isWeekend;
+}
+
+function isInsideWindowAt(date, tz, startHour = START, endHour = END) {
+  console.debug(
+    `[DEBUG] isInsideWindowAt: Checking if ${date} in timezone ${tz} is within window ${startHour}-${endHour}`
+  );
+  const m = moment(date).tz(tz);
+  const h = m.hour();
+  const isInside = !isWeekendAt(date, tz) && h >= startHour && h < endHour;
+  console.debug(
+    `[DEBUG] isInsideWindowAt: Hour is ${h}, isWeekend: ${isWeekendAt(
+      date,
+      tz
+    )}, isInside: ${isInside}`
+  );
+  return isInside;
+}
+
+/** Roll forward to next valid business instant (start of day if outside). */
+function rollForwardToWindowDate(date, tz, startHour = START) {
+  console.debug(
+    `[DEBUG] rollForwardToWindowDate: Rolling forward ${date} in timezone ${tz} to startHour ${startHour}`
+  );
+  let m = moment(date).tz(tz);
+  console.debug(
+    `[DEBUG] rollForwardToWindowDate: Initial moment: ${m.format()}`
+  );
+
+  // If weekend → move to next Monday @ startHour
+  while (isWeekendAt(m, tz)) {
+    console.debug(
+      `[DEBUG] rollForwardToWindowDate: Date ${m.format()} is a weekend, advancing by 1 day`
+    );
+    m = m.add(1, "day");
+  }
+
+  // If before window start → set to startHour today
+  if (m.hour() < startHour) {
+    console.debug(
+      `[DEBUG] rollForwardToWindowDate: Hour ${m.hour()} is before ${startHour}, setting to ${startHour}:00`
+    );
+    m = m.hour(startHour).minute(0).second(0).millisecond(0);
+  }
+
+  // If after window end → next business day @ startHour
+  if (!isInsideWindowAt(m, tz)) {
+    console.debug(
+      `[DEBUG] rollForwardToWindowDate: Date ${m.format()} is outside window, moving to next day at ${startHour}:00`
+    );
+    m = m.add(1, "day").hour(startHour).minute(0).second(0).millisecond(0);
+    while (isWeekendAt(m, tz)) {
+      console.debug(
+        `[DEBUG] rollForwardToWindowDate: Next day ${m.format()} is a weekend, advancing by 1 day`
+      );
+      m = m.add(1, "day");
+    }
+  }
+
+  const result = m.toDate();
+  console.debug(
+    `[DEBUG] rollForwardToWindowDate: Final rolled date: ${result}`
+  );
+  return result;
+}
+
+// -----------------------------------------------------------------------------
+// Idempotent step marker (prevents double-scheduling/sending)
+// -----------------------------------------------------------------------------
+async function ensureOnce(leadId, step) {
+  console.debug(
+    `[DEBUG] ensureOnce: Checking idempotency for leadId ${leadId}, step ${step}`
+  );
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      // Check for existing notification, ignore if older than 1 hour
+      const existing = await tx.notificationEvent.findFirst({
+        where: {
+          leadId,
+          step,
+          createdAt: { gte: new Date(Date.now() - 60 * 60 * 1000) }, // Ignore records older than 1 hour
+        },
+      });
+      console.debug(
+        `[DEBUG] ensureOnce: Existing notification: ${JSON.stringify(existing)}`
+      );
+
+      if (existing) {
+        console.debug(
+          `[DEBUG] ensureOnce: Notification already exists for leadId ${leadId}, step ${step}`
+        );
+        throw new Error("Notification already scheduled");
+      }
+
+      const created = await tx.notificationEvent.create({
+        data: { leadId, step },
+      });
+      console.debug(
+        `[DEBUG] ensureOnce: Created notification event: ${JSON.stringify(
+          created
+        )}`
+      );
+      return true;
+    });
+    console.debug(
+      `[DEBUG] ensureOnce: Transaction successful, result: ${result}`
+    );
+    return result;
+  } catch (e) {
+    console.warn(

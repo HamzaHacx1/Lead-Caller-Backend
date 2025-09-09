@@ -329,6 +329,51 @@ function getAttemptCopy(step, isAnswered = false) {
   }
 
   // Defaults for NO_ANSWER series
+  // First follow-up (attempt 1): explicit copy for both normal and quick steps
+  if (step === "AFTER_1_NO_ANSWER" || step === "AFTER_1_NO_ANSWER_QUICK") {
+    const copy = {
+      subject: sanitize("J’ai tenté de t’appeler pour ta job 🚀"),
+      title: sanitize("J’ai tenté de t’appeler pour ta job 🚀"),
+      cta_text: sanitize("Compléter mon inscription"),
+      cta_link: BOOKING_URL,
+      bodyText: sanitize(`
+        <p>Salut,</p>
+        <p>C’est Simon d’Emploi Rapide.</p>
+        <p>J’ai essayé de t’appeler aujourd’hui pour avancer dans ta recherche d’emploi, mais je n’ai pas réussi à te joindre.</p>
+        <p>Pas de souci — tu peux compléter ton inscription en ligne ici (ça prend 3 minutes) :</p>`),
+      closingText: sanitize("À bientôt,"),
+      smsBody: () => sanitize(`Simon d’${APP_NAME} — J’ai tenté de t’appeler pour ta recherche d’emploi. Rappelle moi !`),
+    };
+    return copy;
+  }
+  if (step === "AFTER_2_NO_ANSWER" || step === "AFTER_2_NO_ANSWER_QUICK") {
+    const copy = {
+      subject: sanitize("Toujours pas eu de nouvelles 📞"),
+      title: sanitize("Toujours pas eu de nouvelles 📞"),
+      cta_text: sanitize("Compléter mon inscription"),
+      cta_link: BOOKING_URL,
+      bodyText: sanitize(`
+        <p>Salut,</p>
+        <p>Hier, j’ai tenté de te joindre pour ta recherche d’emploi, mais je n’ai pas eu de retour.</p>
+        <p>Tu peux gagner du temps en complétant ton inscription directement ici :</p>`),
+      closingText: sanitize("On pourra ainsi te proposer des postes plus rapidement. À très vite."),
+      smsBody: () => sanitize(`Simon d’${APP_NAME} ici — je n’ai toujours pas eu ton appel. Peux-tu me rappeler ? 📞`),
+    };
+    return copy;
+  }
+  if (step === "AFTER_3_NO_ANSWER" || step === "AFTER_3_NO_ANSWER_QUICK") {
+    const copy = {
+      subject: sanitize("As-tu toujours besoin d’un emploi ?"),
+      title: sanitize("As-tu toujours besoin d’un emploi ?"),
+      subtitle: sanitize(""),
+      cta_link: BOOKING_URL,
+      cta_text: sanitize(""),
+      bodyText: sanitize(``),
+      closingText: sanitize(""),
+      smsBody: () => sanitize(`As-tu toujours besoin d’un emploi ?`),
+    };
+    return copy;
+  }
   const base = {
     subject: sanitize("J’ai tenté de t’appeler pour ta job 🚀"),
     title: sanitize("J’ai tenté de t’appeler pour ta job 🚀"),
@@ -775,36 +820,56 @@ export async function handleQuickAttemptNotifications({
   }
 
   if (outcome === "ANSWERED") {
-    console.debug(
-      `[DEBUG] handleQuickAttemptNotifications: Outcome is ANSWERED, ${
-        FAST_NOTIFY ? "sending immediately" : "scheduling quick notifications"
-      }`
-    );
-    if (FAST_NOTIFY) {
-      const steps = ["ANSWERED_15M", "ANSWERED_30M"];
-      for (const step of steps) {
-        try {
-          if (await ensureOnce(lead.id, `${step}_SENT`)) {
-            await processQuickScheduledNotification(lead, step, attemptNumber);
-            try {
-              console.log("[NOTIFY] sent", {
-                leadId: lead.id,
-                step,
-                attemptNumber,
-              });
-            } catch {}
-          }
-        } catch (e) {
-          console.warn(
-            `[NOTIFY] immediate ANSWERED notify failed: ${e?.message}`
-          );
-        }
+    // For attempt 1, we send an immediate email from the webhook path
+    // and only schedule an SMS-only follow-up via queue.
+    const tz = pickTz(lead.timezone || QUEBEC_TZ);
+    const now = moment().tz(tz);
+    const isTest = lead?.metadata?.test === true || lead?.metadata?.testMode === true;
+    const A1 = isTest
+      ? Number(process.env.TEST_ANSWERED_DELAY_MS_1 ?? 90_000)
+      : ANSWERED_DELAY_MS_1;
+    const A2 = isTest
+      ? Number(process.env.TEST_ANSWERED_DELAY_MS_2 ?? 180_000)
+      : ANSWERED_DELAY_MS_2;
+
+    if (attemptNumber === 1) {
+      const step = "ANSWERED_1_SMS_ONLY";
+      if (await ensureOnce(lead.id, `${step}_SCHEDULED`)) {
+        const scheduledAt = now.clone().add(A1, "milliseconds").toDate();
+        await enqueueNotificationEvent({
+          leadId: lead.id,
+          step,
+          scheduledAt,
+          attemptNumber,
+        });
       }
-    } else {
-      await scheduleQuickNotifications(lead);
-      console.debug(
-        `[DEBUG] handleQuickAttemptNotifications: Quick notifications scheduled for leadId ${lead.id}`
-      );
+      return;
+    }
+    if (attemptNumber === 2) {
+      const step = "ANSWERED_15M"; // reuse step, custom copy based on attempt 2
+      if (await ensureOnce(lead.id, `${step}_SCHEDULED`)) {
+        const scheduledAt = now.clone().add(A1, "milliseconds").toDate();
+        await enqueueNotificationEvent({
+          leadId: lead.id,
+          step,
+          scheduledAt,
+          attemptNumber,
+        });
+      }
+      return;
+    }
+    if (attemptNumber === 3) {
+      const step = "ANSWERED_30M"; // reuse step, custom copy based on attempt 3
+      if (await ensureOnce(lead.id, `${step}_SCHEDULED`)) {
+        const scheduledAt = now.clone().add(A2, "milliseconds").toDate();
+        await enqueueNotificationEvent({
+          leadId: lead.id,
+          step,
+          scheduledAt,
+          attemptNumber,
+        });
+      }
+      return;
     }
     return;
   }
@@ -900,8 +965,10 @@ export async function processScheduledNotifications(limit = 500) {
           "ANSWERED_15M",
           "ANSWERED_30M",
           // NEW: NO_ANSWER scheduled steps
+          "AFTER_1_NO_ANSWER",
           "AFTER_2_NO_ANSWER",
           "AFTER_3_NO_ANSWER",
+          "AFTER_1_NO_ANSWER_QUICK",
           "AFTER_2_NO_ANSWER_QUICK",
           "AFTER_3_NO_ANSWER_QUICK",
         ],
@@ -954,6 +1021,19 @@ export async function processScheduledNotifications(limit = 500) {
           `[DEBUG] processScheduledNotifications: Processing quick ANSWERED step ${n.step}`
         );
         await processQuickScheduledNotification(n.lead, n.step, attemptNumber);
+      } else if (["ANSWERED_1_SMS_ONLY"].includes(n.step)) {
+        // SMS-only follow-up after first answered call
+        const copy = {
+          subject: "",
+          smsBody: `Salut 👋\nSuite à ton appel avec notre agent, nous avons créé ton profil temporaire. Pour compléter ton dossier, il ne te reste qu’à joindre tes derniers documents sur notre lien sécurisé ! Vas dans tes courriels tu le retrouveras là.\nPar la suite, ton compte sera créé !`,
+        };
+        await sendEmailAndSMS({
+          lead: n.lead,
+          subject: copy.subject,
+          smsBody: copy.smsBody,
+          skipEmail: true,
+          context: { attemptNumber, outcome: "ANSWERED" },
+        });
       } else if (["AFTER_2_NO_ANSWER", "AFTER_3_NO_ANSWER"].includes(n.step)) {
         console.debug(
           `[DEBUG] processScheduledNotifications: Processing NO_ANSWER step ${n.step}`
@@ -997,6 +1077,48 @@ export async function processScheduledNotifications(limit = 500) {
 }
 
 // -----------------------------------------------------------------------------
+// Immediate email for first answered call (uses summary variables if provided)
+// -----------------------------------------------------------------------------
+export async function sendAnsweredImmediateEmail(lead, vars = {}) {
+  const subject = "Suite à ton appel — complète ton dossier";
+  const safe = (v, dflt = "Non spécifié") =>
+    String(v == null || v === "" ? dflt : v);
+
+  const ctx = {
+    title: "",
+    subtitle: "",
+    cta_text: "Compléter mon dossier",
+    cta_link: BOOKING_URL,
+    bodyText: `
+      <p>Salut 👋</p>
+      <p>Suite à ton appel avec notre agent, nous avons créé ton profil temporaire.</p>
+      <p>Voici quelques informations résumées :</p>
+      <p><strong>Type de poste(s) recherché(s) :</strong><br/>${safe(
+        vars.translated_job_types || vars.job_type
+      )}</p>
+      <p><strong>Disponible pour le travail :</strong><br/>${safe(
+        vars.available_to_start || vars.availability
+      )}</p>
+      <p><strong>Attentes salariales :</strong><br/>${safe(
+        vars.salary_expectation || vars.salary_expectations
+      )}</p>
+      <p><strong>Catégories d’emploi :</strong><br/>${safe(
+        vars.translated_user_categories || vars.job_field
+      )}</p>
+      <p>Pour compléter ton dossier, il ne te reste qu’à joindre tes derniers documents sur notre lien sécurisé !</p>
+    `,
+    closingText: "À très vite,\n L’équipe Emploi Rapide 🚀",
+  };
+
+  await sendEmailAndSMS({
+    lead,
+    subject,
+    context: ctx,
+    smsBody: null,
+    skipEmail: false,
+  });
+}
+// -----------------------------------------------------------------------------
 // BullMQ worker entrypoint: run a single scheduled step (idempotent)
 // -----------------------------------------------------------------------------
 export async function runScheduledNotificationJob({
@@ -1012,10 +1134,10 @@ export async function runScheduledNotificationJob({
     await processScheduledNotification(lead, step, attemptNumber);
   } else if (["ANSWERED_15M", "ANSWERED_30M"].includes(step)) {
     await processQuickScheduledNotification(lead, step, attemptNumber);
-  } else if (["AFTER_2_NO_ANSWER", "AFTER_3_NO_ANSWER"].includes(step)) {
+  } else if (["AFTER_1_NO_ANSWER", "AFTER_2_NO_ANSWER", "AFTER_3_NO_ANSWER"].includes(step)) {
     await processNoAnswerScheduledNotification(lead, step, attemptNumber);
   } else if (
-    ["AFTER_2_NO_ANSWER_QUICK", "AFTER_3_NO_ANSWER_QUICK"].includes(step)
+    ["AFTER_1_NO_ANSWER_QUICK", "AFTER_2_NO_ANSWER_QUICK", "AFTER_3_NO_ANSWER_QUICK"].includes(step)
   ) {
     await processNoAnswerQuickScheduledNotification(lead, step, attemptNumber);
   } else {

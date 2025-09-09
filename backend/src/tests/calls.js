@@ -391,7 +391,7 @@ r.post("/call-now", async (req, res) => {
         .tz(tz)
         .format("YYYY-MM-DD HH:mm:ss z"),
       tz,
-      note: "Dispatcher will place the call imminently (≈10s).",
+      note: "Call scheduled ~6 minutes from now; pre-nudge 5 minutes before.",
     });
   } catch (e) {
     console.error("[/test/call-now] error", e);
@@ -476,3 +476,4 @@ r.post("/flow/calls", async (req, res) => {
     return res.status(500).json({ ok: false, error: e.message || "server" });
   }
 });
+

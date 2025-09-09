@@ -1,0 +1,42 @@
+}
+import sanitizeHtml from "sanitize-html";
+import moment from "moment-timezone";
+
+import { renderTemplate as renderHbsFile } from "../helpers/renderTemplates.js";
+import { sendEmail, sendSMS } from "../helpers/notify.js";
+import { START, END, pickTz } from "../lib/schedule.js";
+import { QUEBEC_TZ } from "../lib/quebecTime.js";
+import prisma from "./prisma.js";
+import { getNotificationQueue } from "../lib/redisQueue.js";
+
+const { SUPPORT_NUMBER, APP_NAME = "EmploiRapide" } = process.env;
+const FAST_NOTIFY = (process.env.FAST_NOTIFY ?? "1") === "1"; // send immediately for testing
+// Configurable delays (ms)
+const ANSWERED_DELAY_MS_1 = Number(process.env.ANSWERED_DELAY_MS_1 ?? 15 * 60 * 1000);
+const ANSWERED_DELAY_MS_2 = Number(process.env.ANSWERED_DELAY_MS_2 ?? 30 * 60 * 1000);
+const NO_ANSWER_DELAY_MS_1 = Number(process.env.NO_ANSWER_DELAY_MS_1 ?? 10 * 60 * 1000);
+const NO_ANSWER_DELAY_MS_2 = Number(process.env.NO_ANSWER_DELAY_MS_2 ?? 10 * 60 * 1000);
+const NO_ANSWER_DELAY_MS_3 = Number(process.env.NO_ANSWER_DELAY_MS_3 ?? 10 * 60 * 1000);
+const BOOKING_URL =
+  process.env.BOOKING_URL || "https://emploirapide.ca/documents";
+
+// -----------------------------------------------------------------------------
+// Window helpers (lead's timezone, not hardcoded Québec)
+// -----------------------------------------------------------------------------
+function isWeekendAt(date, tz) {
+  console.debug(
+    `[DEBUG] isWeekendAt: Checking if ${date} in timezone ${tz} is a weekend`
+  );
+  const d = moment(date).tz(tz).day();
+  const isWeekend = d === 0 || d === 6;
+  console.debug(`[DEBUG] isWeekendAt: Day is ${d}, isWeekend: ${isWeekend}`);
+  return isWeekend;
+}
+
+function isInsideWindowAt(date, tz, startHour = START, endHour = END) {
+  console.debug(
+    `[DEBUG] isInsideWindowAt: Checking if ${date} in timezone ${tz} is within window ${startHour}-${endHour}`
+  );
+  const m = moment(date).tz(tz);
+  const h = m.hour();
+  const isInside = !isWeekendAt(date, tz) && h >= startHour && h < endHour;

@@ -1,0 +1,221 @@
+export async function handleQuickAttemptNotifications({
+  lead,
+  attemptNumber,
+  outcome,
+}) {
+  console.debug(
+    `[DEBUG] handleQuickAttemptNotifications: Starting for leadId ${lead?.id}, attemptNumber ${attemptNumber}, outcome ${outcome}`
+  );
+  if (!lead?.id) {
+    console.debug(
+      `[DEBUG] handleQuickAttemptNotifications: No lead ID, exiting`
+    );
+    return;
+  }
+  console.log("[NOTIFY] handleQuickAttempt", {
+    leadId: lead.id,
+    attemptNumber,
+    outcome,
+  });
+
+  const valid = ["ANSWERED", "NO_ANSWER", "FAILED"]; // Added FAILED
+  if (!valid.includes(outcome)) {
+    console.warn(`[NOTIFY] Invalid outcome ${outcome} for lead ${lead.id}`);
+    console.debug(
+      `[DEBUG] handleQuickAttemptNotifications: Invalid outcome ${outcome}, exiting`
+    );
+    return;
+  }
+
+  if (outcome === "ANSWERED") {
+    console.debug(
+      `[DEBUG] handleQuickAttemptNotifications: Outcome is ANSWERED, ${
+        FAST_NOTIFY ? "sending immediately" : "scheduling quick notifications"
+      }`
+    );
+    if (FAST_NOTIFY) {
+      const steps = ["ANSWERED_15M", "ANSWERED_30M"];
+      for (const step of steps) {
+        try {
+          if (await ensureOnce(lead.id, `${step}_SENT`)) {
+            await processQuickScheduledNotification(lead, step, attemptNumber);
+            try {
+              console.log("[NOTIFY] sent", {
+                leadId: lead.id,
+                step,
+                attemptNumber,
+              });
+            } catch {}
+          }
+        } catch (e) {
+          console.warn(
+            `[NOTIFY] immediate ANSWERED notify failed: ${e?.message}`
+          );
+        }
+      }
+    } else {
+      await scheduleQuickNotifications(lead);
+      console.debug(
+        `[DEBUG] handleQuickAttemptNotifications: Quick notifications scheduled for leadId ${lead.id}`
+      );
+    }
+    return;
+  }
+
+  // TESTING: For testing, send NO_ANSWER_QUICK notifications immediately or schedule at 2-min intervals
+  if (
+    (outcome === "NO_ANSWER" || outcome === "FAILED") &&
+    attemptNumber >= 1 &&
+    attemptNumber <= 3
+  ) {
+    const step = `AFTER_${attemptNumber}_NO_ANSWER_QUICK`;
+    console.debug(
+      `[DEBUG] handleQuickAttemptNotifications: Processing NO_ANSWER_QUICK step ${step}`
+    );
+    if (await ensureOnce(lead.id, `${step}_SCHEDULED`)) {
+      console.debug(
+        `[DEBUG] handleQuickAttemptNotifications: Idempotency check passed for ${step}_SCHEDULED`
+      );
+      const copy = getAttemptCopy(step);
+      const tz = pickTz(lead.timezone || QUEBEC_TZ);
+      const now = moment().tz(tz);
+      const isTest = lead?.metadata?.test === true || lead?.metadata?.testMode === true;
+      const perAttemptQ = isTest
+        ? [
+            Number(process.env.TEST_NO_ANSWER_DELAY_MS_1 ?? 90_000),
+            Number(process.env.TEST_NO_ANSWER_DELAY_MS_2 ?? 90_000),
+            Number(process.env.TEST_NO_ANSWER_DELAY_MS_3 ?? 90_000),
+          ]
+        : [NO_ANSWER_DELAY_MS_1, NO_ANSWER_DELAY_MS_2, NO_ANSWER_DELAY_MS_3];
+      const delayMs = FAST_NOTIFY ? 0 : perAttemptQ[Math.max(0, attemptNumber - 1)] ?? perAttemptQ[0];
+      const scheduledAt = now.clone().add(delayMs, "milliseconds").toDate();
+      console.debug(
+        `[DEBUG] handleQuickAttemptNotifications: Scheduling for ${scheduledAt}, delay: ${delayMs}ms`
+      );
+
+      const created = await enqueueNotificationEvent({
+        leadId: lead.id,
+        step,
+        scheduledAt,
+        attemptNumber,
+      });
+      console.debug(
+        `[DEBUG] handleQuickAttemptNotifications: Enqueued notification: ${JSON.stringify(created)}`
+      );
+    }
+  }
+
+  // ORIGINAL: Comment out for testing; restore after
+  /*
+  if (outcome === "NO_ANSWER" && attemptNumber >= 1 && attemptNumber <= 3) {
+    const step = `AFTER_${attemptNumber}_NO_ANSWER_QUICK`;
+    if (await ensureOnce(lead.id, step)) {
+      const copy = getAttemptCopy(step);
+      await sendEmailAndSMS({
+        lead,
+        subject: copy.subject,
+        smsBody: copy.smsBody,
+        skipEmail: attemptNumber === 3,
+        context: {
+          attemptNumber,
+          outcome,
+          title: copy.title,
+          subtitle: copy.subtitle,
+          cta_text: copy.cta_text,
+          cta_link: BOOKING_URL,
+          bodyText: copy.bodyText,
+          closingText: copy.closingText,
+        },
+      });
+    }
+  }
+  */
+}
+
+// -----------------------------------------------------------------------------
+// Worker to process due notifications (safe across multiple instances)
+// -----------------------------------------------------------------------------
+export async function processScheduledNotifications(limit = 500) {
+  // console.debug(
+  //   `[DEBUG] processScheduledNotifications: Starting with limit ${limit}`
+  // );
+  const now = new Date();
+  // console.debug(`[DEBUG] processScheduledNotifications: Current time: ${now}`);
+
+  const notifications = await prisma.notificationEvent.findMany({
+    where: {
+      scheduledAt: { lte: now },
+      step: {
+        in: [
+          // ANSWERED series (kept)
+          "ANSWERED_24H",
+          "ANSWERED_48H",
+          "ANSWERED_15M",
+          "ANSWERED_30M",
+          // NEW: NO_ANSWER scheduled steps
+          "AFTER_1_NO_ANSWER",
+          "AFTER_2_NO_ANSWER",
+          "AFTER_3_NO_ANSWER",
+          "AFTER_1_NO_ANSWER_QUICK",
+          "AFTER_2_NO_ANSWER_QUICK",
+          "AFTER_3_NO_ANSWER_QUICK",
+        ],
+      },
+    },
+    include: { lead: true },
+    take: limit,
+    orderBy: { scheduledAt: "asc" },
+  });
+  // console.debug(
+  //   `[DEBUG] processScheduledNotifications: Found ${notifications.length} notifications`
+  // );
+
+  for (const n of notifications) {
+    console.debug(
+      `[DEBUG] processScheduledNotifications: Processing notification id ${n.id}, step ${n.step}`
+    );
+    try {
+      console.debug(
+        `[DEBUG] processScheduledNotifications: Attempting advisory lock for notification id ${n.id}`
+      );
+      const got =
+        await prisma.$queryRaw`SELECT pg_try_advisory_xact_lock(${BigInt(
+          n.id
+        )}) AS ok;`;
+      console.debug(
+        `[DEBUG] processScheduledNotifications: Lock result: ${JSON.stringify(
+          got
+        )}`
+      );
+      if (!got?.[0]?.ok) {
+        console.debug(
+          `[DEBUG] processScheduledNotifications: Failed to acquire lock for id ${n.id}, skipping`
+        );
+        continue;
+      }
+
+      const attemptNumber = n.metadata?.attemptNumber || 1;
+      console.debug(
+        `[DEBUG] processScheduledNotifications: Attempt number: ${attemptNumber}`
+      );
+
+      if (["ANSWERED_24H", "ANSWERED_48H"].includes(n.step)) {
+        console.debug(
+          `[DEBUG] processScheduledNotifications: Processing ANSWERED step ${n.step}`
+        );
+        await processScheduledNotification(n.lead, n.step, attemptNumber);
+      } else if (["ANSWERED_15M", "ANSWERED_30M"].includes(n.step)) {
+        console.debug(
+          `[DEBUG] processScheduledNotifications: Processing quick ANSWERED step ${n.step}`
+        );
+        await processQuickScheduledNotification(n.lead, n.step, attemptNumber);
+      } else if (["AFTER_2_NO_ANSWER", "AFTER_3_NO_ANSWER"].includes(n.step)) {
+        console.debug(
+          `[DEBUG] processScheduledNotifications: Processing NO_ANSWER step ${n.step}`
+        );
+        await processNoAnswerScheduledNotification(
+          n.lead,
+          n.step,
+          attemptNumber
+        );
+      } else if (

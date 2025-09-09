@@ -7,6 +7,7 @@ import { nextInsideWindowUnix, START, END, pickTz } from "../lib/schedule.js";
 import {
   handleQuickAttemptNotifications,
   processScheduledNotifications,
+  sendAnsweredImmediateEmail,
 } from "../lib/notifications.js";
 import { nowIn, QUEBEC_TZ } from "../lib/quebecTime.js";
 import prisma from "../lib/prisma.js";
@@ -621,6 +622,24 @@ r.post("/elevenlabs", async (req, res) => {
           });
           console.debug(`[DEBUG] POST /elevenlabs: Notifications triggered`);
         }
+
+      // Immediate email for first ANSWERED attempt (summary, if available)
+      try {
+        if (outcome === 'ANSWERED' && currentAttemptNumber === 1) {
+          await sendAnsweredImmediateEmail(lead, {
+            availability: dc?.availability ?? null,
+            salary_expectations: dc?.salary_expectations ?? null,
+            job_type: dc?.job_type ?? null,
+            job_field: dc?.job_field ?? null,
+            translated_job_types: null,
+            translated_user_categories: null,
+            completion_link: process.env.BOOKING_URL || null,
+          });
+        }
+      } catch (e) {
+        console.warn('[NOTIFY] answered immediate email failed', e?.message);
+      }
+
       } catch (e) {
         console.warn("[NOTIFY] attempt notifications failed", e?.message);
         console.debug(

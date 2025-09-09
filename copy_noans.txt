@@ -1,0 +1,106 @@
+      return copy;
+    }
+  }
+
+  // Defaults for NO_ANSWER series
+  const base = {
+    subject: sanitize("J’ai tenté de t’appeler pour ta job 🚀"),
+    title: sanitize("J’ai tenté de t’appeler pour ta job 🚀"),
+    cta_text: sanitize("➡️ Compléter mon inscription"),
+    cta_link: BOOKING_URL,
+    bodyText: sanitize(`
+      <p>Salut,</p>
+      <p><strong>J’ai essayé de t’appeler aujourd’hui</strong> pour avancer dans ta recherche d’emploi, mais je n’ai pas réussi à te joindre.</p>
+      <p>Pas de souci — tu peux compléter ton inscription en ligne (3 minutes) :</p>`),
+    closingText: sanitize("À bientôt !"),
+    smsBody: () =>
+      sanitize(
+        `Simon d’${APP_NAME} — J’ai tenté de t’appeler pour ta recherche d’emploi. Rappelle moi !`
+      ),
+  };
+
+  if (step === "AFTER_2_NO_ANSWER") {
+    const copy = {
+      subject: sanitize("Toujours pas eu de nouvelles 📞"),
+      title: sanitize("Toujours pas eu de nouvelles 📞"),
+      cta_text: sanitize("Compléter mon inscription"),
+      cta_link: BOOKING_URL,
+      bodyText: sanitize(
+        `<p>Tu peux gagner du temps en complétant ton inscription directement ici :</p>`
+      ),
+      closingText: sanitize(
+        "On pourra ainsi te proposer des postes plus rapidement. À très vite !"
+      ),
+      smsBody: () =>
+        sanitize(
+          `Simon d’${APP_NAME} ici — je n’ai toujours pas eu ton appel. Peux-tu me rappeler ? 📞`
+        ),
+    };
+    console.debug(
+      `[DEBUG] getAttemptCopy: Returning copy for AFTER_2_NO_ANSWER: ${JSON.stringify(
+        copy
+      )}`
+    );
+    return copy;
+  }
+  if (step === "AFTER_3_NO_ANSWER") {
+    const copy = {
+      subject: sanitize("Dernier suivi — on met en pause si pas de nouvelles"),
+      title: sanitize("Dernière tentative"),
+      subtitle: sanitize("On aimerait vraiment t’aider 🚀"),
+      cta_link: BOOKING_URL,
+      cta_text: sanitize("➡️ DÉMARRER MA CANDIDATURE"),
+      bodyText: sanitize(`
+        <p>C’est la 3<sup>e</sup> fois qu’on essaye de t’appeler sans succès.</p>
+        <p>Si tu veux toujours un job rapidement, il te suffit de compléter ton profil :</p>`),
+      closingText: sanitize("Merci et à bientôt !"),
+      smsBody: () => sanitize(`As-tu toujours besoin d’un emploi ?`),
+    };
+    console.debug(
+      `[DEBUG] getAttemptCopy: Returning copy for AFTER_3_NO_ANSWER: ${JSON.stringify(
+        copy
+      )}`
+    );
+    return copy;
+  }
+  if (step === "AFTER_2_NO_ANSWER_QUICK") {
+    const copy = {
+      subject: sanitize("Toujours pas de nouvelles 📞"),
+      title: sanitize("Toujours pas de nouvelles 📞"),
+      cta_text: sanitize("Compléter mon inscription"),
+      cta_link: BOOKING_URL,
+      bodyText: sanitize(`<p>Complète ton inscription ici pour avancer :</p>`),
+      closingText: sanitize(
+        "On peut te proposer des postes rapidement. À tout de suite !"
+      ),
+      smsBody: () =>
+        sanitize(
+          `Simon d’${APP_NAME} — Pas eu ton appel. Rappelle-moi vite ! 📞`
+        ),
+    };
+    console.debug(
+      `[DEBUG] getAttemptCopy: Returning copy for AFTER_2_NO_ANSWER_QUICK: ${JSON.stringify(
+        copy
+      )}`
+    );
+    return copy;
+  }
+  if (step === "AFTER_3_NO_ANSWER_QUICK") {
+    const copy = {
+      subject: sanitize("Dernier rappel — on met en pause"),
+      title: sanitize("Dernier rappel rapide"),
+      subtitle: sanitize("On veut t’aider 🚀"),
+      cta_link: BOOKING_URL,
+      cta_text: sanitize("➡️ DÉMARRER MA CANDIDATURE"),
+      bodyText: sanitize(`
+        <p>3<sup>e</sup> tentative d’appel sans réponse.</p>
+        <p>Complète ton profil pour avancer :</p>`),
+      closingText: sanitize("Merci et à bientôt !"),
+      smsBody: () => sanitize(`Toujours à la recherche d’un emploi ?`),
+    };
+    console.debug(
+      `[DEBUG] getAttemptCopy: Returning copy for AFTER_3_NO_ANSWER_QUICK: ${JSON.stringify(
+        copy
+      )}`
+    );
+    return copy;

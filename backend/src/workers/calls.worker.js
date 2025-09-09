@@ -84,11 +84,13 @@ export function startCallsWorker() {
       const lead = await prisma.lead.findUnique({ where: { id: leadId } });
       if (!lead) return;
 
-      // 1) Pre-call nudge now (this job is scheduled to run PRECALL_NUDGE_MS before callAt)
+      // 1) Pre-call nudge: exactly once, only for the first attempt
       try {
-        const ok = await ensurePrecallOnce(lead.id, attemptId);
-        if (ok) {
-          await sendPreCallNudge({ lead, attempt: { id: attemptId, attemptNumber } });
+        if (attemptNumber === 1) {
+          const ok = await ensurePrecallOnce(lead.id, attemptId);
+          if (ok) {
+            await sendPreCallNudge({ lead, attempt: { id: attemptId, attemptNumber } });
+          }
         }
       } catch {}
 
