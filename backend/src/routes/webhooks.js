@@ -139,14 +139,53 @@ function mapOutcomeFromTranscription(data) {
     `[DEBUG] mapOutcomeFromTranscription: call_successful: ${cs}, termination_reason: ${term}`
   );
 
+  // Treat any voicemail-related termination as a missed call (NO_ANSWER)
+  if (term.includes("voicemail")) {
+    console.debug(
+      `[DEBUG] mapOutcomeFromTranscription: Voicemail detected -> NO_ANSWER`
+    );
+    return "NO_ANSWER";
+  }
+
+  // If ElevenLabs marks the call as successful, count as ANSWERED
   if (success) {
     console.debug(`[DEBUG] mapOutcomeFromTranscription: Returning ANSWERED`);
     return "ANSWERED";
   }
-  if (term.includes("voicemail")) {
-    console.debug(`[DEBUG] mapOutcomeFromTranscription: Returning VOICEMAIL`);
-    return "VOICEMAIL";
+
+  // Heuristic: if transcript contains any human/user utterance, count as ANSWERED
+  try {
+    const t = Array.isArray(data.transcript) ? data.transcript : null;
+    if (t && t.length) {
+      const spokeByHuman = t.some((m) => {
+        const text = String(
+          m?.text ?? m?.transcript ?? m?.content ?? ""
+        ).trim();
+        const speakerRaw = String(
+          m?.speaker ?? m?.role ?? m?.sender ?? m?.source ?? m?.speaker_name ?? ""
+        ).toLowerCase();
+        const isAgent =
+          m?.is_agent === true || /\b(agent|assistant|ai|bot)\b/.test(speakerRaw);
+        const isHuman =
+          m?.is_agent === false ||
+          /\b(user|human|caller|lead|callee|customer|person)\b/.test(
+            speakerRaw
+          );
+        return !isAgent && isHuman && text.length >= 2;
+      });
+      if (spokeByHuman) {
+        console.debug(
+          `[DEBUG] mapOutcomeFromTranscription: Human utterance found -> ANSWERED`
+        );
+        return "ANSWERED";
+      }
+    }
+  } catch (e) {
+    console.debug(
+      `[DEBUG] mapOutcomeFromTranscription: transcript check failed: ${e?.message}`
+    );
   }
+
   if (
     term.includes("no_answer") ||
     term.includes("no-answer") ||
@@ -785,7 +824,7 @@ r.post("/elevenlabs", async (req, res) => {
     console.debug(`[DEBUG] POST /elevenlabs: Processing flat payload`);
     const statusMap = {
       answered: "ANSWERED",
-      voicemail: "VOICEMAIL",
+      voicemail: "NO_ANSWER",
       "no-answer": "NO_ANSWER",
       no_answer: "NO_ANSWER",
       noanswer: "NO_ANSWER",

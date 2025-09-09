@@ -41,6 +41,8 @@ export async function callOutbound({
       email: lead.email || null,
       attempt: attemptNumber,
       timezone: lead.timezone,
+      policy_avoid_voicemail:
+        (process.env.EL_AVOID_VOICEMAIL ?? "1") === "1" ? true : false,
       ...metadata,
     },
     variables: {
@@ -48,6 +50,23 @@ export async function callOutbound({
       ...variables,
     },
   };
+
+  // Optionally apply overrides to reduce voicemail risk: do not speak first,
+  // and pass a dynamic flag the agent can use in its prompt/logic.
+  if ((process.env.EL_AVOID_VOICEMAIL ?? "1") === "1") {
+    body.conversation_initiation_client_data = {
+      conversation_config_override: {
+        agent: {
+          // Empty string -> agent waits for the user to start speaking.
+          first_message: "",
+        },
+      },
+      dynamic_variables: {
+        avoid_voicemail: true,
+        ...variables,
+      },
+    };
+  }
 
   if (process.env.EL_WEBHOOK_ID) {
     body.post_call_webhook_id = process.env.EL_WEBHOOK_ID;
