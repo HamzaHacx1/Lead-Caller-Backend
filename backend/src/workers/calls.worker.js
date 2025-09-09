@@ -47,8 +47,7 @@ async function sendPreCallNudge({ lead, attempt }) {
     </div>
   `;
 
-  const isTestLead = lead?.metadata?.test === true || lead?.metadata?.testMode === true;
-  if (!isTestLead && lead.email && /\S+@\S+\.\S+/.test(String(lead.email))) {
+  if (lead.email && /\S+@\S+\.\S+/.test(String(lead.email))) {
     try { await sendEmail({ to: safe(lead.email), subject, html }); } catch {}
   }
   if (lead.phone && String(lead.phone).replace(/[^\d+]/g, "").length >= 10) {

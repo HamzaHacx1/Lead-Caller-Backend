@@ -832,13 +832,11 @@ r.post("/elevenlabs", async (req, res) => {
         );
       });
 
-      // ---------- Next attempt policy (next working day) ----------
-      const scheduleNext = ["FAILED", "NO_ANSWER", "VOICEMAIL"].includes(
-        outcome
-      );
-      if (scheduleNext && attemptsOnLead < MAX_ATTEMPTS) {
+      // ---------- Next attempt policy (always up to MAX_ATTEMPTS) ----------
+      // Call every lead up to MAX_ATTEMPTS times regardless of outcome.
+      if (attemptsOnLead < MAX_ATTEMPTS) {
         console.debug(
-          `[DEBUG] POST /elevenlabs: Scheduling next-day attempt for outcome ${outcome}`
+          `[DEBUG] POST /elevenlabs: Scheduling next attempt for outcome ${outcome}`
         );
         // Do NOT double-schedule if the next attempt already exists
         const nextAttemptExists = await prisma.callAttempt.findUnique({
@@ -1187,9 +1185,9 @@ r.post("/elevenlabs", async (req, res) => {
       );
     });
 
-    if (["FAILED", "NO_ANSWER", "VOICEMAIL"].includes(outcome) && attemptsCount < MAX_ATTEMPTS) {
+    if (attemptsCount < MAX_ATTEMPTS) {
       console.debug(
-        `[DEBUG] POST /elevenlabs: Scheduling next-day attempt (flat), attemptsCount: ${attemptsCount}`
+        `[DEBUG] POST /elevenlabs: Scheduling next attempt (flat), attemptsCount: ${attemptsCount}`
       );
       const tz = pickTz(lead.timezone || QUEBEC_TZ);
       console.debug(`[DEBUG] POST /elevenlabs: Using timezone ${tz} (flat)`);

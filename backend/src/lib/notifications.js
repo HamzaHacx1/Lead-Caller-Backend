@@ -502,8 +502,7 @@ async function sendEmailAndSMS({ lead, subject, context, smsBody, skipEmail }) {
   console.debug(`[DEBUG] sendEmailAndSMS: Context: ${JSON.stringify(baseCtx)}`);
 
   // Email
-  const isTestLead = lead?.metadata?.test === true || lead?.metadata?.testMode === true;
-  if (!skipEmail && hasEmail(lead) && !isTestLead) {
+  if (!skipEmail && hasEmail(lead)) {
     try {
       console.debug(
         `[DEBUG] sendEmailAndSMS: Rendering email template for leadId ${lead.id}`
@@ -531,11 +530,11 @@ async function sendEmailAndSMS({ lead, subject, context, smsBody, skipEmail }) {
   } else {
     console.log("[NOTIFY:email] skipped", {
       leadId: lead?.id,
-      reason: skipEmail ? "forced skip" : isTestLead ? "test_lead" : "no email",
+      reason: skipEmail ? "forced skip" : "no email",
     });
     console.debug(
       `[DEBUG] sendEmailAndSMS: Email skipped, reason: ${
-        skipEmail ? "forced skip" : isTestLead ? "test_lead" : "no email"
+        skipEmail ? "forced skip" : "no email"
       }`
     );
   }
@@ -1324,10 +1323,8 @@ async function processNoAnswerScheduledNotification(lead, step, attemptNumber) {
       lead,
       subject: copy.subject,
       smsBody: copy.smsBody,
-      // Skip email for test leads as well; keep attempt 3 skip for prod
-      skipEmail:
-        (lead?.metadata?.test === true || lead?.metadata?.testMode === true) ||
-        attemptNumber === 3,
+      // Always skip email on 3rd NO_ANSWER follow-up; send SMS only
+      skipEmail: attemptNumber === 3,
       context: {
         attemptNumber,
         outcome: "NO_ANSWER",
