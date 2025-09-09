@@ -253,20 +253,19 @@ function mapOutcomeFromTranscription(data) {
 
   // (success already handled above)
 
-  // If remote party ended the call without any detected human utterance,
-  // treat it as NO_ANSWER rather than FAILED (user likely hung up immediately).
+  // Simplest rule: if remote party ended the call (user picked up then dropped), count as ANSWERED.
   if (term.includes("remote party") || term.includes("ended by remote")) {
     console.debug(
-      `[DEBUG] mapOutcomeFromTranscription: remote party hangup -> NO_ANSWER (dur=${callDur}s)`
+      `[DEBUG] mapOutcomeFromTranscription: remote party hangup -> ANSWERED (dur=${callDur}s)`
     );
     if (LOG_SIGNALS) {
       console.log("[EL DECISION]", {
-        outcome: "NO_ANSWER",
-        reason: "remote_party_no_human",
+        outcome: "ANSWERED",
+        reason: "remote_party",
         call_duration_secs: callDur,
       });
     }
-    return "NO_ANSWER";
+    return "ANSWERED";
   }
 
   if (
