@@ -302,6 +302,30 @@ function mapOutcomeFromTranscription(data) {
   return "FAILED";
 }
 
+/** Robust check for test leads (supports boolean/number/string flags) */
+function isTestLead(lead) {
+  try {
+    const m = lead?.metadata || {};
+    const isTruthy = (v) =>
+      v === true || v === 1 || v === "1" || String(v).toLowerCase() === "true";
+    return isTruthy(m.test) || isTruthy(m.testMode) || isTruthy(m.call_now_test);
+  } catch (_) {
+    return false;
+  }
+}
+
+/** Compute short test gap (seconds) aligned with NO_ANSWER test delays */
+function testGapSecsForNextAttempt(currentAttemptNumber) {
+  const ms1 = Number(process.env.TEST_CALL_DELAY_MS_1 ?? process.env.TEST_NO_ANSWER_DELAY_MS_1 ?? 90_000);
+  const ms2 = Number(process.env.TEST_CALL_DELAY_MS_2 ?? process.env.TEST_NO_ANSWER_DELAY_MS_2 ?? 90_000);
+  const ms3 = Number(process.env.TEST_CALL_DELAY_MS_3 ?? process.env.TEST_NO_ANSWER_DELAY_MS_3 ?? 90_000);
+  const arr = [ms1, ms2, ms3];
+  const idx = Math.max(0, Math.min(arr.length - 1, currentAttemptNumber - 1));
+  const ms = arr[idx] ?? arr[0] ?? 90_000;
+  // minimum 5s safety to avoid immediate duplicate enqueueing
+  return Math.max(5, Math.floor(ms / 1000));
+}
+
 function pickDataCollections(d) {
   console.debug(
     `[DEBUG] pickDataCollections: Extracting data collections from: ${JSON.stringify(
@@ -855,12 +879,13 @@ r.post("/elevenlabs", async (req, res) => {
         );
 
         if (!nextAttemptExists) {
-          const isTestLead = lead?.metadata?.test === true || lead?.metadata?.testMode === true;
+          const testLead = isTestLead(lead);
           const tz = pickTz(lead.timezone || QUEBEC_TZ);
 
-          if (isTestLead) {
-            // TEST MODE: disregard business window; schedule exactly 5 minutes after now
-            const scheduledUnix = Math.floor(Date.now() / 1000) + 5 * 60;
+          if (testLead) {
+            // TEST MODE: disregard business window; schedule with minimal gap (aligned with NO_ANSWER flow)
+            const gapSecs = testGapSecsForNextAttempt(currentAttemptNumber + 1);
+            const scheduledUnix = Math.floor(Date.now() / 1000) + gapSecs;
             const scheduledAt = new Date(scheduledUnix * 1000);
             const attempt = await prisma.callAttempt.create({
               data: {
@@ -868,7 +893,7 @@ r.post("/elevenlabs", async (req, res) => {
                 attemptNumber: currentAttemptNumber + 1,
                 status: "SCHEDULED",
                 scheduledAt,
-                payload: { schedule_reason: outcome, test: true },
+                payload: { schedule_reason: outcome, test: true, gap_secs: gapSecs },
               },
             });
             await prisma.lead.update({
@@ -889,6 +914,7 @@ r.post("/elevenlabs", async (req, res) => {
               leadId: lead.id,
               attemptNumber: currentAttemptNumber + 1,
               when_local: moment(scheduledAt).tz(tz).format("YYYY-MM-DD HH:mm:ss z"),
+              gap_secs: gapSecs,
             });
           } else {
             // NORMAL MODE: schedule next working day within window
@@ -1208,9 +1234,10 @@ r.post("/elevenlabs", async (req, res) => {
       );
 
       if (!nextAttemptExists) {
-        const isTestLead = lead?.metadata?.test === true || lead?.metadata?.testMode === true;
-        if (isTestLead) {
-          const scheduledUnix = Math.floor(Date.now() / 1000) + 5 * 60;
+        const testLead = isTestLead(lead);
+        if (testLead) {
+          const gapSecs = testGapSecsForNextAttempt(attemptsCount + 1);
+          const scheduledUnix = Math.floor(Date.now() / 1000) + gapSecs;
           const scheduledAt = new Date(scheduledUnix * 1000);
           const attempt = await prisma.callAttempt.upsert({
             where: {
@@ -1224,7 +1251,7 @@ r.post("/elevenlabs", async (req, res) => {
               attemptNumber: attemptsCount + 1,
               status: "SCHEDULED",
               scheduledAt,
-              payload: { schedule_reason: outcome, test: true },
+              payload: { schedule_reason: outcome, test: true, gap_secs: gapSecs },
             },
             update: { scheduledAt },
           });
@@ -1246,6 +1273,7 @@ r.post("/elevenlabs", async (req, res) => {
             leadId: lead.id,
             attemptNumber: attemptsCount + 1,
             when_local: moment(scheduledAt).tz(tz).format("YYYY-MM-DD HH:mm:ss z"),
+            gap_secs: gapSecs,
           });
         } else {
           const { attempt, scheduledUnix } = await reserveCallSlotAndCreateAttempt({

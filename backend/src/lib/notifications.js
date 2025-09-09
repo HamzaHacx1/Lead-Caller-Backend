@@ -19,6 +19,18 @@ const NO_ANSWER_DELAY_MS_3 = Number(process.env.NO_ANSWER_DELAY_MS_3 ?? 10 * 60 
 const BOOKING_URL =
   process.env.BOOKING_URL || "https://emploirapide.ca/documents";
 
+// Robust test-lead detection (boolean/number/string truthy)
+function isTestLead(lead) {
+  try {
+    const m = lead?.metadata || {};
+    const isTruthy = (v) =>
+      v === true || v === 1 || v === "1" || String(v).toLowerCase() === "true";
+    return isTruthy(m.test) || isTruthy(m.testMode) || isTruthy(m.call_now_test);
+  } catch (_) {
+    return false;
+  }
+}
+
 // -----------------------------------------------------------------------------
 // Window helpers (lead's timezone, not hardcoded Québec)
 // -----------------------------------------------------------------------------
@@ -633,7 +645,7 @@ async function scheduleQuickNotifications(lead) {
   );
 
   // Keep step keys; shorten timings for quick tests
-  const isTest = lead?.metadata?.test === true || lead?.metadata?.testMode === true;
+  const isTest = isTestLead(lead);
   const A1 = isTest
     ? Number(process.env.TEST_ANSWERED_DELAY_MS_1 ?? 90_000)
     : ANSWERED_DELAY_MS_1;
@@ -744,7 +756,7 @@ export async function handleAttemptNotifications({
       const copy = getAttemptCopy(step);
       const tz = pickTz(lead.timezone || QUEBEC_TZ);
       const now = moment().tz(tz);
-      const isTest = lead?.metadata?.test === true || lead?.metadata?.testMode === true;
+      const isTest = isTestLead(lead);
       const perAttempt = isTest
         ? [
             Number(process.env.TEST_NO_ANSWER_DELAY_MS_1 ?? 90_000),
@@ -832,7 +844,7 @@ export async function handleQuickAttemptNotifications({
   if (outcome === "ANSWERED") {
     const tz = pickTz(lead.timezone || QUEBEC_TZ);
     const now = moment().tz(tz);
-    const isTest = lead?.metadata?.test === true || lead?.metadata?.testMode === true;
+    const isTest = isTestLead(lead);
 
     if (isTest) {
       // TEST ROUTE: send email+SMS together after call
@@ -958,7 +970,7 @@ export async function handleQuickAttemptNotifications({
       const copy = getAttemptCopy(step);
       const tz = pickTz(lead.timezone || QUEBEC_TZ);
       const now = moment().tz(tz);
-      const isTest = lead?.metadata?.test === true || lead?.metadata?.testMode === true;
+      const isTest = isTestLead(lead);
       let delayMs;
       if (isTest) {
         delayMs = attemptNumber === 1 ? 0 : 120_000;
