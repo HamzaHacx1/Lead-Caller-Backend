@@ -330,7 +330,7 @@ r.post("/call-now", async (req, res) => {
 
     // ~10s from now (no slot rounding for true “call now”)
     const nowUnix = moment().tz(tz).unix();
-    const scheduledUnix = nowUnix + 10;
+    const scheduledUnix = nowUnix + 6 * 60;
 
   const result = await prisma.$transaction(async (tx) => {
       const lead = await tx.lead.create({

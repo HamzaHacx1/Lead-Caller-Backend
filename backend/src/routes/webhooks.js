@@ -683,26 +683,63 @@ r.post("/elevenlabs", async (req, res) => {
         );
 
         if (!nextAttemptExists) {
+          const isTestLead = lead?.metadata?.test === true || lead?.metadata?.testMode === true;
           const tz = pickTz(lead.timezone || QUEBEC_TZ);
-          const { attempt, scheduledUnix } = await reserveCallSlotAndCreateAttempt({
-            leadId: lead.id,
-            attemptNumber: currentAttemptNumber + 1,
-            tz,
-          });
-          await enqueueCallForAttempt({
-            leadId: lead.id,
-            attemptId: attempt.id,
-            attemptNumber: currentAttemptNumber + 1,
-            scheduledUnix,
-          });
-          console.log("[WEBHOOK] next attempt scheduled", {
-            leadId: lead.id,
-            attemptNumber: currentAttemptNumber + 1,
-            when_local: moment
-              .unix(scheduledUnix)
-              .tz(tz)
-              .format("YYYY-MM-DD HH:mm:ss z"),
-          });
+
+          if (isTestLead) {
+            // TEST MODE: disregard business window; schedule exactly 5 minutes after now
+            const scheduledUnix = Math.floor(Date.now() / 1000) + 5 * 60;
+            const scheduledAt = new Date(scheduledUnix * 1000);
+            const attempt = await prisma.callAttempt.create({
+              data: {
+                leadId: lead.id,
+                attemptNumber: currentAttemptNumber + 1,
+                status: "SCHEDULED",
+                scheduledAt,
+                payload: { schedule_reason: outcome, test: true },
+              },
+            });
+            await prisma.lead.update({
+              where: { id: lead.id },
+              data: {
+                status: "SCHEDULED",
+                nextScheduledAt: scheduledAt,
+                attempts: currentAttemptNumber + 1,
+              },
+            });
+            await enqueueCallForAttempt({
+              leadId: lead.id,
+              attemptId: attempt.id,
+              attemptNumber: currentAttemptNumber + 1,
+              scheduledUnix,
+            });
+            console.log("[WEBHOOK] next attempt scheduled (test)", {
+              leadId: lead.id,
+              attemptNumber: currentAttemptNumber + 1,
+              when_local: moment(scheduledAt).tz(tz).format("YYYY-MM-DD HH:mm:ss z"),
+            });
+          } else {
+            // NORMAL MODE: schedule next working day within window
+            const { attempt, scheduledUnix } = await reserveCallSlotAndCreateAttempt({
+              leadId: lead.id,
+              attemptNumber: currentAttemptNumber + 1,
+              tz,
+            });
+            await enqueueCallForAttempt({
+              leadId: lead.id,
+              attemptId: attempt.id,
+              attemptNumber: currentAttemptNumber + 1,
+              scheduledUnix,
+            });
+            console.log("[WEBHOOK] next attempt scheduled", {
+              leadId: lead.id,
+              attemptNumber: currentAttemptNumber + 1,
+              when_local: moment
+                .unix(scheduledUnix)
+                .tz(tz)
+                .format("YYYY-MM-DD HH:mm:ss z"),
+            });
+          }
         }
       }
 
@@ -964,25 +1001,66 @@ r.post("/elevenlabs", async (req, res) => {
       );
 
       if (!nextAttemptExists) {
-        const { attempt, scheduledUnix } = await reserveCallSlotAndCreateAttempt({
-          leadId: lead.id,
-          attemptNumber: attemptsCount + 1,
-          tz,
-        });
-        await enqueueCallForAttempt({
-          leadId: lead.id,
-          attemptId: attempt.id,
-          attemptNumber: attemptsCount + 1,
-          scheduledUnix,
-        });
-        console.log("[WEBHOOK] next attempt scheduled (flat)", {
-          leadId: lead.id,
-          attemptNumber: attemptsCount + 1,
-          when_local: moment
-            .unix(scheduledUnix)
-            .tz(tz)
-            .format("YYYY-MM-DD HH:mm:ss z"),
-        });
+        const isTestLead = lead?.metadata?.test === true || lead?.metadata?.testMode === true;
+        if (isTestLead) {
+          const scheduledUnix = Math.floor(Date.now() / 1000) + 5 * 60;
+          const scheduledAt = new Date(scheduledUnix * 1000);
+          const attempt = await prisma.callAttempt.upsert({
+            where: {
+              leadId_attemptNumber: {
+                leadId: lead.id,
+                attemptNumber: attemptsCount + 1,
+              },
+            },
+            create: {
+              leadId: lead.id,
+              attemptNumber: attemptsCount + 1,
+              status: "SCHEDULED",
+              scheduledAt,
+              payload: { schedule_reason: outcome, test: true },
+            },
+            update: { scheduledAt },
+          });
+          await prisma.lead.update({
+            where: { id: lead.id },
+            data: {
+              status: "SCHEDULED",
+              nextScheduledAt: scheduledAt,
+              attempts: attemptsCount + 1,
+            },
+          });
+          await enqueueCallForAttempt({
+            leadId: lead.id,
+            attemptId: attempt.id,
+            attemptNumber: attemptsCount + 1,
+            scheduledUnix,
+          });
+          console.log("[WEBHOOK] next attempt scheduled (flat,test)", {
+            leadId: lead.id,
+            attemptNumber: attemptsCount + 1,
+            when_local: moment(scheduledAt).tz(tz).format("YYYY-MM-DD HH:mm:ss z"),
+          });
+        } else {
+          const { attempt, scheduledUnix } = await reserveCallSlotAndCreateAttempt({
+            leadId: lead.id,
+            attemptNumber: attemptsCount + 1,
+            tz,
+          });
+          await enqueueCallForAttempt({
+            leadId: lead.id,
+            attemptId: attempt.id,
+            attemptNumber: attemptsCount + 1,
+            scheduledUnix,
+          });
+          console.log("[WEBHOOK] next attempt scheduled (flat)", {
+            leadId: lead.id,
+            attemptNumber: attemptsCount + 1,
+            when_local: moment
+              .unix(scheduledUnix)
+              .tz(tz)
+              .format("YYYY-MM-DD HH:mm:ss z"),
+          });
+        }
       }
     }
 

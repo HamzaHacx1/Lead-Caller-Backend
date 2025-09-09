@@ -578,9 +578,16 @@ async function scheduleQuickNotifications(lead) {
   );
 
   // Keep step keys; shorten timings for quick tests
+  const isTest = lead?.metadata?.test === true || lead?.metadata?.testMode === true;
+  const A1 = isTest
+    ? Number(process.env.TEST_ANSWERED_DELAY_MS_1 ?? 90_000)
+    : ANSWERED_DELAY_MS_1;
+  const A2 = isTest
+    ? Number(process.env.TEST_ANSWERED_DELAY_MS_2 ?? 180_000)
+    : ANSWERED_DELAY_MS_2;
   const plans = [
-    { step: "ANSWERED_15M", delayMs: FAST_NOTIFY ? 0 : ANSWERED_DELAY_MS_1 },
-    { step: "ANSWERED_30M", delayMs: FAST_NOTIFY ? 0 : ANSWERED_DELAY_MS_2 },
+    { step: "ANSWERED_15M", delayMs: FAST_NOTIFY ? 0 : A1 },
+    { step: "ANSWERED_30M", delayMs: FAST_NOTIFY ? 0 : A2 },
   ];
 
   for (const p of plans) {
@@ -682,8 +689,15 @@ export async function handleAttemptNotifications({
       const copy = getAttemptCopy(step);
       const tz = pickTz(lead.timezone || QUEBEC_TZ);
       const now = moment().tz(tz);
-      const perAttempt = [NO_ANSWER_DELAY_MS_1, NO_ANSWER_DELAY_MS_2, NO_ANSWER_DELAY_MS_3];
-      const delayMs = FAST_NOTIFY ? 0 : perAttempt[Math.max(0, attemptNumber - 1)] || NO_ANSWER_DELAY_MS_1;
+      const isTest = lead?.metadata?.test === true || lead?.metadata?.testMode === true;
+      const perAttempt = isTest
+        ? [
+            Number(process.env.TEST_NO_ANSWER_DELAY_MS_1 ?? 90_000),
+            Number(process.env.TEST_NO_ANSWER_DELAY_MS_2 ?? 90_000),
+            Number(process.env.TEST_NO_ANSWER_DELAY_MS_3 ?? 90_000),
+          ]
+        : [NO_ANSWER_DELAY_MS_1, NO_ANSWER_DELAY_MS_2, NO_ANSWER_DELAY_MS_3];
+      const delayMs = FAST_NOTIFY ? 0 : perAttempt[Math.max(0, attemptNumber - 1)] ?? perAttempt[0];
       const scheduledAt = now.clone().add(delayMs, "milliseconds").toDate();
       console.debug(
         `[DEBUG] handleAttemptNotifications: Scheduling for ${scheduledAt}, delay: ${delayMs}ms`
@@ -812,8 +826,15 @@ export async function handleQuickAttemptNotifications({
       const copy = getAttemptCopy(step);
       const tz = pickTz(lead.timezone || QUEBEC_TZ);
       const now = moment().tz(tz);
-      const perAttemptQ = [NO_ANSWER_DELAY_MS_1, NO_ANSWER_DELAY_MS_2, NO_ANSWER_DELAY_MS_3];
-      const delayMs = FAST_NOTIFY ? 0 : perAttemptQ[Math.max(0, attemptNumber - 1)] || NO_ANSWER_DELAY_MS_1;
+      const isTest = lead?.metadata?.test === true || lead?.metadata?.testMode === true;
+      const perAttemptQ = isTest
+        ? [
+            Number(process.env.TEST_NO_ANSWER_DELAY_MS_1 ?? 90_000),
+            Number(process.env.TEST_NO_ANSWER_DELAY_MS_2 ?? 90_000),
+            Number(process.env.TEST_NO_ANSWER_DELAY_MS_3 ?? 90_000),
+          ]
+        : [NO_ANSWER_DELAY_MS_1, NO_ANSWER_DELAY_MS_2, NO_ANSWER_DELAY_MS_3];
+      const delayMs = FAST_NOTIFY ? 0 : perAttemptQ[Math.max(0, attemptNumber - 1)] ?? perAttemptQ[0];
       const scheduledAt = now.clone().add(delayMs, "milliseconds").toDate();
       console.debug(
         `[DEBUG] handleQuickAttemptNotifications: Scheduling for ${scheduledAt}, delay: ${delayMs}ms`
