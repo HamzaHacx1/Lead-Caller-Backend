@@ -159,7 +159,12 @@ function mapOutcomeFromTranscription(data) {
     if (t && t.length) {
       const spokeByHuman = t.some((m) => {
         const text = String(
-          m?.text ?? m?.transcript ?? m?.content ?? ""
+          m?.message ??
+            m?.original_message ??
+            m?.text ??
+            m?.transcript ??
+            m?.content ??
+            ""
         ).trim();
         const speakerRaw = String(
           m?.speaker ?? m?.role ?? m?.sender ?? m?.source ?? m?.speaker_name ?? ""
@@ -170,7 +175,8 @@ function mapOutcomeFromTranscription(data) {
           m?.is_agent === false ||
           /\b(user|human|caller|lead|callee|customer|person)\b/.test(
             speakerRaw
-          );
+          ) ||
+          speakerRaw === "user";
         return !isAgent && isHuman && text.length >= 2;
       });
       if (spokeByHuman) {
