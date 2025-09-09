@@ -10,10 +10,14 @@ import {
 } from "../lib/notifications.js";
 import { nowIn, QUEBEC_TZ } from "../lib/quebecTime.js";
 import prisma from "../lib/prisma.js";
+import {
+  reserveCallSlotAndCreateAttempt,
+  enqueueCallForAttempt,
+} from "../lib/calls.js";
 
 // ---- dialing policy (tweak for prod/testing) ----
 const MAX_ATTEMPTS = 3; // total attempts per lead
-const RETRY_GAP_MINUTES = 5; // gap between attempts for distinct nudges
+const RETRY_GAP_MINUTES = 5; // legacy (unused for production); next-day scheduling is used
 const FINAL_STATUSES = new Set([
   "ANSWERED",
   "NO_ANSWER",
@@ -22,6 +26,7 @@ const FINAL_STATUSES = new Set([
 ]);
 
 const r = Router();
+const NOTIFY_QUEUE_ENABLED = (process.env.NOTIFY_QUEUE_ENABLED ?? "1") === "1";
 
 /** ---------- HMAC verify ---------- */
 function verifyHmac(req) {
@@ -653,11 +658,13 @@ r.post("/elevenlabs", async (req, res) => {
         );
       });
 
-      // ---------- Retry (window-safe, idempotent, capped) ----------
-      const retryable = ["FAILED", "NO_ANSWER", "VOICEMAIL"];
-      if (retryable.includes(outcome) && attemptsOnLead < MAX_ATTEMPTS) {
+      // ---------- Next attempt policy (next working day) ----------
+      const scheduleNext = ["FAILED", "NO_ANSWER", "VOICEMAIL", "ANSWERED"].includes(
+        outcome
+      );
+      if (scheduleNext && attemptsOnLead < MAX_ATTEMPTS) {
         console.debug(
-          `[DEBUG] POST /elevenlabs: Outcome ${outcome} is retryable, checking for next attempt`
+          `[DEBUG] POST /elevenlabs: Scheduling next-day attempt for outcome ${outcome}`
         );
         // Do NOT double-schedule if the next attempt already exists
         const nextAttemptExists = await prisma.callAttempt.findUnique({
@@ -677,74 +684,24 @@ r.post("/elevenlabs", async (req, res) => {
 
         if (!nextAttemptExists) {
           const tz = pickTz(lead.timezone || QUEBEC_TZ);
-          console.debug(`[DEBUG] POST /elevenlabs: Using timezone ${tz}`);
-
-          // // schedule RETRY_GAP_MINUTES from now in lead tz
-          // let nextM = moment()
-          //   .tz(tz)
-          //   .add(RETRY_GAP_MINUTES, "minutes")
-          //   .second(0)
-          //   .millisecond(0);
-          // console.debug(
-          //   `[DEBUG] POST /elevenlabs: Initial retry time: ${nextM.format()}`
-          // );
-
-          // // clamp into business window
-          // const h = nextM.hour();
-          // const dow = nextM.day();
-          // if (dow === 0 || dow === 6 || h < START || h >= END) {
-          //   console.debug(
-          //     `[DEBUG] POST /elevenlabs: Time outside business hours, clamping`
-          //   );
-          //   const insideUnix = await nextInsideWindowUnix(tz);
-          //   nextM = moment.unix(insideUnix).tz(tz);
-          //   console.debug(
-          //     `[DEBUG] POST /elevenlabs: Clamped to: ${nextM.format()}`
-          //   );
-          // }
-
-          // schedule RETRY_GAP_MINUTES from now in lead tz (test-friendly)
-          let nextM = moment()
-            .tz(tz)
-            .add(RETRY_GAP_MINUTES, "minutes")
-            .second(0)
-            .millisecond(0);
-          console.debug(
-            `[DEBUG] POST /elevenlabs: Initial retry time: ${nextM.format()}`
-          );
-
-          const scheduledAt = nextM.toDate();
-          console.debug(
-            `[DEBUG] POST /elevenlabs: Scheduling retry at ${scheduledAt}`
-          );
-
-          await prisma.callAttempt.create({
-            data: {
-              leadId: lead.id,
-              attemptNumber: currentAttemptNumber + 1,
-              status: "SCHEDULED",
-              scheduledAt,
-              payload: { schedule_reason: outcome, hangup_on_voicemail: true },
-            },
+          const { attempt, scheduledUnix } = await reserveCallSlotAndCreateAttempt({
+            leadId: lead.id,
+            attemptNumber: currentAttemptNumber + 1,
+            tz,
           });
-          console.debug(`[DEBUG] POST /elevenlabs: Created retry attempt`);
-
-          await prisma.lead.update({
-            where: { id: lead.id },
-            data: {
-              status: "SCHEDULED",
-              nextScheduledAt: scheduledAt,
-              attempts: currentAttemptNumber + 1,
-            },
+          await enqueueCallForAttempt({
+            leadId: lead.id,
+            attemptId: attempt.id,
+            attemptNumber: currentAttemptNumber + 1,
+            scheduledUnix,
           });
-          console.debug(
-            `[DEBUG] POST /elevenlabs: Lead updated with retry schedule`
-          );
-
           console.log("[WEBHOOK] next attempt scheduled", {
             leadId: lead.id,
             attemptNumber: currentAttemptNumber + 1,
-            when_local: nextM.format("YYYY-MM-DD HH:mm:ss z"),
+            when_local: moment
+              .unix(scheduledUnix)
+              .tz(tz)
+              .format("YYYY-MM-DD HH:mm:ss z"),
           });
         }
       }
@@ -756,10 +713,12 @@ r.post("/elevenlabs", async (req, res) => {
         to_number,
         attempts: attemptsOnLead,
       });
-      // For testing: process any due notifications immediately
-      try {
-        await processScheduledNotifications(200);
-      } catch (e) {}
+      // For testing only when queue disabled; avoid double-processing when BullMQ is enabled
+      if (!NOTIFY_QUEUE_ENABLED) {
+        try {
+          await processScheduledNotifications(200);
+        } catch (e) {}
+      }
       console.debug(`[DEBUG] POST /elevenlabs: Structured processing complete`);
       return res.json({ ok: true });
     } // <-- CLOSE the structured branch here
@@ -982,12 +941,9 @@ r.post("/elevenlabs", async (req, res) => {
       );
     });
 
-    if (
-      ["FAILED", "NO_ANSWER", "VOICEMAIL"].includes(outcome) &&
-      attemptsCount < MAX_ATTEMPTS
-    ) {
+    if (["FAILED", "NO_ANSWER", "VOICEMAIL", "ANSWERED"].includes(outcome) && attemptsCount < MAX_ATTEMPTS) {
       console.debug(
-        `[DEBUG] POST /elevenlabs: Outcome ${outcome} is retryable, attemptsCount: ${attemptsCount}`
+        `[DEBUG] POST /elevenlabs: Scheduling next-day attempt (flat), attemptsCount: ${attemptsCount}`
       );
       const tz = pickTz(lead.timezone || QUEBEC_TZ);
       console.debug(`[DEBUG] POST /elevenlabs: Using timezone ${tz} (flat)`);
@@ -1008,67 +964,24 @@ r.post("/elevenlabs", async (req, res) => {
       );
 
       if (!nextAttemptExists) {
-        let nextM = moment()
-          .tz(tz)
-          .add(RETRY_GAP_MINUTES, "minutes")
-          .second(0)
-          .millisecond(0);
-        console.debug(
-          `[DEBUG] POST /elevenlabs: Initial retry time (flat): ${nextM.format()}`
-        );
-        const h = nextM.hour();
-        const dow = nextM.day();
-        if (dow === 0 || dow === 6 || h < START || h >= END) {
-          console.debug(
-            `[DEBUG] POST /elevenlabs: Time outside business hours, clamping (flat)`
-          );
-          const insideUnix = await nextInsideWindowUnix(tz);
-          nextM = moment.unix(insideUnix).tz(tz);
-          console.debug(
-            `[DEBUG] POST /elevenlabs: Clamped to: ${nextM.format()} (flat)`
-          );
-        }
-        const scheduledAt = nextM.toDate();
-        console.debug(
-          `[DEBUG] POST /elevenlabs: Scheduling retry at ${scheduledAt} (flat)`
-        );
-
-        await prisma.callAttempt.upsert({
-          where: {
-            leadId_attemptNumber: {
-              leadId: lead.id,
-              attemptNumber: attemptsCount + 1,
-            },
-          },
-          create: {
-            leadId: lead.id,
-            attemptNumber: attemptsCount + 1,
-            status: "SCHEDULED",
-            scheduledAt,
-            payload: { schedule_reason: outcome, hangup_on_voicemail: true },
-          },
-          update: { scheduledAt },
+        const { attempt, scheduledUnix } = await reserveCallSlotAndCreateAttempt({
+          leadId: lead.id,
+          attemptNumber: attemptsCount + 1,
+          tz,
         });
-        console.debug(
-          `[DEBUG] POST /elevenlabs: Retry attempt upserted (flat)`
-        );
-
-        await prisma.lead.update({
-          where: { id: lead.id },
-          data: {
-            status: "SCHEDULED",
-            nextScheduledAt: scheduledAt,
-            attempts: attemptsCount + 1,
-          },
+        await enqueueCallForAttempt({
+          leadId: lead.id,
+          attemptId: attempt.id,
+          attemptNumber: attemptsCount + 1,
+          scheduledUnix,
         });
-        console.debug(
-          `[DEBUG] POST /elevenlabs: Lead updated with retry schedule (flat)`
-        );
-
         console.log("[WEBHOOK] next attempt scheduled (flat)", {
           leadId: lead.id,
           attemptNumber: attemptsCount + 1,
-          when_local: nextM.format("YYYY-MM-DD HH:mm:ss z"),
+          when_local: moment
+            .unix(scheduledUnix)
+            .tz(tz)
+            .format("YYYY-MM-DD HH:mm:ss z"),
         });
       }
     }
@@ -1078,10 +991,11 @@ r.post("/elevenlabs", async (req, res) => {
       outcome,
       attempts: attemptsCount,
     });
-    // For testing: process any due notifications immediately
-    try {
-      await processScheduledNotifications(200);
-    } catch (e) {}
+    if (!NOTIFY_QUEUE_ENABLED) {
+      try {
+        await processScheduledNotifications(200);
+      } catch (e) {}
+    }
     console.debug(`[DEBUG] POST /elevenlabs: Flat processing complete`);
     return res.json({ ok: true });
   } catch (e) {

@@ -13,7 +13,7 @@ import { QUEBEC_TZ, nowIn } from "./lib/quebecTime.js";
 // cron/reschedule-anomalies.js
 import prisma from "./lib/prisma.js";
 
-const SLOT_SECS = 300; // 5 minutes
+const SLOT_SECS = 180; // 3 minutes
 const slotKeyForUnix = (unix) => BigInt(Math.floor(unix / SLOT_SECS));
 
 function logNow() {

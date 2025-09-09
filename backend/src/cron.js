@@ -8,6 +8,7 @@ const { processScheduledNotifications } = await import("./lib/notifications.js")
 const { default: prisma, disconnectPrisma } = await import("./lib/prisma.js");
 
 const INTERVAL_MS = 30_000; // 30 seconds
+const NOTIFY_QUEUE_ENABLED = (process.env.NOTIFY_QUEUE_ENABLED ?? "1") === "1";
 
 async function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -23,11 +24,11 @@ async function tick() {
 }
 
 async function main() {
-  console.log(
-    "[cron] notifications worker started; interval =",
-    INTERVAL_MS,
-    "ms"
-  );
+  if (NOTIFY_QUEUE_ENABLED) {
+    console.log("[cron] BullMQ notifications enabled; cron worker is idle.");
+    return; // do nothing when queue-based scheduling is enabled
+  }
+  console.log("[cron] notifications worker started; interval =", INTERVAL_MS, "ms");
   const stop = async () => {
     await disconnectPrisma();
     process.exit(0);

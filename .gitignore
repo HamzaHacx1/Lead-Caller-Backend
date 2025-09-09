@@ -55,3 +55,8 @@ pids/*
 # Misc
 backend/src/uploads/
 frontend/.vite/
+
+# Temp scratch files
+tmp*.txt
+wh*.txt
+*.tmp

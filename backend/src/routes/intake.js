@@ -13,11 +13,12 @@ import {
 import { nowIn, QUEBEC_TZ } from "../lib/quebecTime.js";
 // routes/intake.js
 import prisma from "../lib/prisma.js";
+import { enqueueCallForAttempt } from "../lib/calls.js";
 
 // -----------------------------------------------------------------------------
 // Constants & tiny helpers
 // -----------------------------------------------------------------------------
-const SLOT_SECS = 300; // 5 minutes per call slot
+const SLOT_SECS = 180; // 3 minutes per call slot
 
 /** Map a unix second to a BIGINT advisory lock key (one per 5-min slot). */
 function slotKeyForUnix(unix) {
@@ -216,7 +217,19 @@ r.post("/facebook", async (req, res) => {
       throw new Error("no_free_slot_found");
     });
 
-    // -------- 5) Respond (we don't fire the call here) --------
+    // -------- 5) Enqueue call job (pre-nudge + call) --------
+    try {
+      await enqueueCallForAttempt({
+        leadId: result.lead.id,
+        attemptId: result.attempt.id,
+        attemptNumber: 1,
+        scheduledUnix: result.scheduledUnix,
+      });
+    } catch (e) {
+      console.warn("[INTAKE] failed to enqueue call job", e?.message);
+    }
+
+    // -------- 6) Respond --------
     return res.json({
       ok: true,
       leadId: result.lead.id,
@@ -228,8 +241,6 @@ r.post("/facebook", async (req, res) => {
         .format("YYYY-MM-DD HH:mm:ss z"),
       window_tz: tzForLead,
       window_hours: { start: START, end: END },
-      // Hint: if you truly want to trigger an immediate call, let a dispatcher
-      // or a separate route act on this. We keep intake side-effects minimal.
       call_now: insideWindowNow && (forceNow || ignoreWindow),
     });
   } catch (e) {

@@ -24,7 +24,7 @@ const PRECALL_ENABLED = (process.env.PRECALL_ENABLED ?? "1") === "1";
 // Optional delay between pre-call nudge and dialing (ms)
 const PRECALL_CALL_DELAY_MS = Math.max(
   0,
-  Number(process.env.PRECALL_CALL_DELAY_MS ?? "15000")
+  Number(process.env.PRECALL_CALL_DELAY_MS ?? "300000")
 );
 
 // ----------------------------------------------------------------------------

@@ -14,10 +14,11 @@ import { processScheduledNotifications } from "../lib/notifications.js";
 // dispatcher will handle outbound calls
 import { QUEBEC_TZ } from "../lib/quebecTime.js";
 import prisma from "../lib/prisma.js";
+import { enqueueCallForAttempt } from "../lib/calls.js";
 
 const r = Router();
 
-const SLOT_SECS = 300; // 5 minutes
+const SLOT_SECS = 180; // 3 minutes
 const slotKeyForUnix = (unix) => BigInt(Math.floor(unix / SLOT_SECS));
 
 /** auth (very light) — set TEST_SECRET in env if you want to guard these */
@@ -97,7 +98,7 @@ r.post("/schedule/call", async (req, res) => {
     const tz = pickTz(timezone);
     let targetUnix = nextSlotInTz(tz, Number(offsetSecs) || 0);
 
-    const result = await prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
       // create lead
       const lead = await tx.lead.create({
         data: {
@@ -155,13 +156,24 @@ r.post("/schedule/call", async (req, res) => {
       });
 
       return { lead, attempt, targetUnix };
-    });
-
-    return res.json({
-      ok: true,
+  });
+  // Enqueue the call job so pre-nudge + call are handled even if dispatcher is disabled
+  try {
+    await enqueueCallForAttempt({
       leadId: result.lead.id,
       attemptId: result.attempt.id,
-      scheduled_time_unix: result.targetUnix,
+      attemptNumber: 1,
+      scheduledUnix: result.targetUnix,
+    });
+  } catch (e) {
+    console.warn("[/test/schedule/call] enqueue failed", e?.message);
+  }
+
+  return res.json({
+    ok: true,
+    leadId: result.lead.id,
+    attemptId: result.attempt.id,
+    scheduled_time_unix: result.targetUnix,
       scheduled_time_local: moment
         .unix(result.targetUnix)
         .tz(tz)
@@ -320,7 +332,7 @@ r.post("/call-now", async (req, res) => {
     const nowUnix = moment().tz(tz).unix();
     const scheduledUnix = nowUnix + 10;
 
-    const result = await prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
       const lead = await tx.lead.create({
         data: {
           fullName: full_name,
@@ -352,11 +364,21 @@ r.post("/call-now", async (req, res) => {
       });
 
       return { lead, attempt, scheduledUnix };
-    });
+  });
 
-    // Do not place the call here. The dispatcher will pick this immediate
-    // attempt and handle pre-call nudges + outbound call.
-    const convoId = null;
+  // Enqueue call job so pre-nudge + call are handled; this bypasses window
+  try {
+    await enqueueCallForAttempt({
+      leadId: result.lead.id,
+      attemptId: result.attempt.id,
+      attemptNumber: 1,
+      scheduledUnix: result.scheduledUnix,
+    });
+  } catch (e) {
+    console.warn("[/test/call-now] enqueue failed", e?.message);
+  }
+
+  const convoId = null;
 
     return res.json({
       ok: true,
@@ -378,3 +400,79 @@ r.post("/call-now", async (req, res) => {
 });
 
 export default r;
+
+/**
+ * POST /test/flow/calls
+ * Bypass window: schedules 3 calls with 5-minute gap; notifications use configured delays.
+ * Body: { full_name, phone, email?, timezone? }
+ */
+r.post("/flow/calls", async (req, res) => {
+  try {
+    const { full_name, phone, email = null, timezone = QUEBEC_TZ } = req.body || {};
+    if (!full_name || !phone) return res.status(400).json({ ok: false, error: "missing_name_or_phone" });
+    const tz = pickTz(timezone);
+
+    const nowUnix = Math.floor(Date.now() / 1000);
+    const callTimes = [nowUnix + 6 * 60, nowUnix + 11 * 60, nowUnix + 16 * 60]; // 5-min gap between calls
+
+    const result = await prisma.$transaction(async (tx) => {
+      const lead = await tx.lead.create({
+        data: {
+          fullName: full_name,
+          phone: String(phone).replace(/[^\d+]/g, ""),
+          email,
+          timezone: tz,
+          status: "SCHEDULED",
+          metadata: { test: true, flow: "calls-3" },
+        },
+      });
+
+      const attempts = [];
+      for (let i = 0; i < 3; i++) {
+        const attempt = await tx.callAttempt.create({
+          data: {
+            leadId: lead.id,
+            attemptNumber: i + 1,
+            status: "SCHEDULED",
+            scheduledAt: new Date(callTimes[i] * 1000),
+          },
+        });
+        attempts.push(attempt);
+      }
+
+      await tx.lead.update({
+        where: { id: lead.id },
+        data: {
+          attempts: 3,
+          nextScheduledAt: new Date(callTimes[0] * 1000),
+        },
+      });
+
+      return { lead, attempts };
+    });
+
+    // Enqueue call jobs (pre-nudge will run 5 min before each call)
+    for (const a of result.attempts) {
+      await enqueueCallForAttempt({
+        leadId: result.lead.id,
+        attemptId: a.id,
+        attemptNumber: a.attemptNumber,
+        scheduledUnix: Math.floor(a.scheduledAt.getTime() / 1000),
+      });
+    }
+
+    return res.json({
+      ok: true,
+      leadId: result.lead.id,
+      schedule: result.attempts.map((a) => ({
+        attempt: a.attemptNumber,
+        call_time_unix: Math.floor(a.scheduledAt.getTime() / 1000),
+        call_time_local: moment(a.scheduledAt).tz(timezone).format("YYYY-MM-DD HH:mm:ss z"),
+      })),
+      note: "Calls scheduled with 5-minute gaps; notifications delays configurable via env.",
+    });
+  } catch (e) {
+    console.error("[/test/flow/calls] error", e);
+    return res.status(500).json({ ok: false, error: e.message || "server" });
+  }
+});

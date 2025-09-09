@@ -86,7 +86,7 @@ export function isInsideQuebecWindow(
 }
 // lib/schedule.js (additions)
 
-export const SLOT_SECS = 300; // 5 minutes
+export const SLOT_SECS = 180; // 3 minutes
 
 /** Ceil to the next 5-min boundary */
 export function ceilToSlotUnix(unix) {

@@ -19,6 +19,9 @@ import { setIo } from "./lib/realtime.js";
 import intake from "./routes/intake.js";
 import n8n from "./tests/calls.js";
 import sms from "./routes/sms.js";
+import { startNotificationsWorker } from "./workers/notifications.worker.js";
+import { startCallsWorker } from "./workers/calls.worker.js";
+import { startNotificationsWorker } from "./workers/notifications.worker.js";
 
 const app = express();
 
@@ -108,15 +111,31 @@ io.on("connection", (socket) => {
   console.log("WS connected", socket.id);
   socket.on("disconnect", () => console.log("WS disconnected", socket.id));
 });
-const stopDispatcher = startDispatcher();
+const QUEUE_NOTIFICATIONS = (process.env.NOTIFY_QUEUE_ENABLED ?? "1") === "1";
+const QUEUE_CALLS = (process.env.CALLS_QUEUE_ENABLED ?? "1") === "1";
+
+const stopDispatcher = QUEUE_CALLS ? null : startDispatcher();
+const notificationsWorker = QUEUE_NOTIFICATIONS ? startNotificationsWorker() : null;
+const callsWorker = QUEUE_CALLS ? startCallsWorker() : null;
 process.on("SIGINT", async () => {
   try {
     stopDispatcher?.();
+    await notificationsWorker?.close();
+    await callsWorker?.close();
     await prisma.$disconnect(); // Close Prisma connections
     console.log("Prisma connections closed");
   } catch (err) {
     console.error("Error during shutdown:", err);
   }
+  process.exit(0);
+});
+process.on("SIGTERM", async () => {
+  try {
+    stopDispatcher?.();
+    await notificationsWorker?.close();
+    await callsWorker?.close();
+    await prisma.$disconnect();
+  } catch {}
   process.exit(0);
 });
 const PORT = process.env.PORT || 3001;

@@ -6,9 +6,16 @@ import { sendEmail, sendSMS } from "../helpers/notify.js";
 import { START, END, pickTz } from "../lib/schedule.js";
 import { QUEBEC_TZ } from "../lib/quebecTime.js";
 import prisma from "./prisma.js";
+import { getNotificationQueue } from "../lib/redisQueue.js";
 
 const { SUPPORT_NUMBER, APP_NAME = "EmploiRapide" } = process.env;
 const FAST_NOTIFY = (process.env.FAST_NOTIFY ?? "1") === "1"; // send immediately for testing
+// Configurable delays (ms)
+const ANSWERED_DELAY_MS_1 = Number(process.env.ANSWERED_DELAY_MS_1 ?? 15 * 60 * 1000);
+const ANSWERED_DELAY_MS_2 = Number(process.env.ANSWERED_DELAY_MS_2 ?? 30 * 60 * 1000);
+const NO_ANSWER_DELAY_MS_1 = Number(process.env.NO_ANSWER_DELAY_MS_1 ?? 10 * 60 * 1000);
+const NO_ANSWER_DELAY_MS_2 = Number(process.env.NO_ANSWER_DELAY_MS_2 ?? 10 * 60 * 1000);
+const NO_ANSWER_DELAY_MS_3 = Number(process.env.NO_ANSWER_DELAY_MS_3 ?? 10 * 60 * 1000);
 const BOOKING_URL =
   process.env.BOOKING_URL || "https://emploirapide.ca/documents";
 
@@ -140,6 +147,35 @@ async function ensureOnce(leadId, step) {
     );
     return false;
   }
+}
+
+// -----------------------------------------------------------------------------
+// BullMQ scheduling helper (persist event + enqueue delayed job)
+// -----------------------------------------------------------------------------
+async function enqueueNotificationEvent({ leadId, step, scheduledAt, attemptNumber = 1 }) {
+  const when = scheduledAt instanceof Date ? scheduledAt : new Date(scheduledAt);
+  const delay = Math.max(0, when.getTime() - Date.now());
+
+  // Persist a DB row for traceability
+  const event = await prisma.notificationEvent.create({
+    data: {
+      leadId,
+      step,
+      scheduledAt: when,
+      metadata: { attemptNumber },
+    },
+  });
+
+  // Enqueue BullMQ job
+  const queue = getNotificationQueue();
+  const jobId = `lead:${leadId}:step:${step}`; // idempotent per lead+step
+  await queue.add(
+    "notify-step",
+    { leadId, step, attemptNumber, eventId: event.id },
+    { delay, jobId }
+  );
+
+  return event;
 }
 
 // -----------------------------------------------------------------------------
@@ -483,8 +519,8 @@ async function scheduleDelayedNotifications(lead) {
 
   // TESTING: For testing, schedule at 2-min intervals
   const plans = [
-    { step: "ANSWERED_24H", delayMs: FAST_NOTIFY ? 0 : 2 * 60 * 1000 },
-    { step: "ANSWERED_48H", delayMs: FAST_NOTIFY ? 0 : 4 * 60 * 1000 },
+    { step: "ANSWERED_24H", delayMs: FAST_NOTIFY ? 0 : 24 * 60 * 60 * 1000 },
+    { step: "ANSWERED_48H", delayMs: FAST_NOTIFY ? 0 : 48 * 60 * 60 * 1000 },
   ];
 
   for (const p of plans) {
@@ -495,16 +531,14 @@ async function scheduleDelayedNotifications(lead) {
     console.debug(
       `[DEBUG] scheduleDelayedNotifications: Target time: ${target}`
     );
-    const created = await prisma.notificationEvent.create({
-      data: {
-        leadId: lead.id,
-        step: p.step,
-        scheduledAt: target, // No window clamping for testing
-        metadata: { attemptNumber: 1 },
-      },
+    const created = await enqueueNotificationEvent({
+      leadId: lead.id,
+      step: p.step,
+      scheduledAt: target, // No window clamping for testing
+      attemptNumber: 1,
     });
     console.debug(
-      `[DEBUG] scheduleDelayedNotifications: Created notification event: ${JSON.stringify(
+      `[DEBUG] scheduleDelayedNotifications: Enqueued notification event: ${JSON.stringify(
         created
       )}`
     );
@@ -545,8 +579,8 @@ async function scheduleQuickNotifications(lead) {
 
   // Keep step keys; shorten timings for quick tests
   const plans = [
-    { step: "ANSWERED_15M", delayMs: FAST_NOTIFY ? 0 : 3 * 60 * 1000 },
-    { step: "ANSWERED_30M", delayMs: FAST_NOTIFY ? 0 : 6 * 60 * 1000 },
+    { step: "ANSWERED_15M", delayMs: FAST_NOTIFY ? 0 : ANSWERED_DELAY_MS_1 },
+    { step: "ANSWERED_30M", delayMs: FAST_NOTIFY ? 0 : ANSWERED_DELAY_MS_2 },
   ];
 
   for (const p of plans) {
@@ -557,16 +591,14 @@ async function scheduleQuickNotifications(lead) {
     console.debug(`[DEBUG] scheduleQuickNotifications: Target time: ${target}`);
     // If you want strict business-hours clamping during tests, swap `target` with:
     // const scheduledAt = rollForwardToWindowDate(target, tz, START);
-    const created = await prisma.notificationEvent.create({
-      data: {
-        leadId: lead.id,
-        step: p.step,
-        scheduledAt: target,
-        metadata: { attemptNumber: 1 },
-      },
+    const created = await enqueueNotificationEvent({
+      leadId: lead.id,
+      step: p.step,
+      scheduledAt: target,
+      attemptNumber: 1,
     });
     console.debug(
-      `[DEBUG] scheduleQuickNotifications: Created notification event: ${JSON.stringify(
+      `[DEBUG] scheduleQuickNotifications: Enqueued notification event: ${JSON.stringify(
         created
       )}`
     );
@@ -650,55 +682,25 @@ export async function handleAttemptNotifications({
       const copy = getAttemptCopy(step);
       const tz = pickTz(lead.timezone || QUEBEC_TZ);
       const now = moment().tz(tz);
-      const delayMs = FAST_NOTIFY ? 0 : (attemptNumber - 1) * 2 * 60 * 1000; // 0 for testing
+      const perAttempt = [NO_ANSWER_DELAY_MS_1, NO_ANSWER_DELAY_MS_2, NO_ANSWER_DELAY_MS_3];
+      const delayMs = FAST_NOTIFY ? 0 : perAttempt[Math.max(0, attemptNumber - 1)] || NO_ANSWER_DELAY_MS_1;
       const scheduledAt = now.clone().add(delayMs, "milliseconds").toDate();
       console.debug(
         `[DEBUG] handleAttemptNotifications: Scheduling for ${scheduledAt}, delay: ${delayMs}ms`
       );
 
-      if (delayMs === 0) {
-        console.debug(
-          `[DEBUG] handleAttemptNotifications: Sending immediate notification for attempt ${attemptNumber}`
-        );
-        // Send immediately for first attempt
-        await sendEmailAndSMS({
-          lead,
-          subject: copy.subject,
-          smsBody: copy.smsBody,
-          skipEmail: attemptNumber === 3,
-          context: {
-            attemptNumber,
-            outcome,
-            title: copy.title,
-            subtitle: copy.subtitle,
-            cta_text: copy.cta_text,
-            cta_link: BOOKING_URL,
-            bodyText: copy.bodyText,
-            closingText: copy.closingText,
-          },
-        });
-        console.debug(
-          `[DEBUG] handleAttemptNotifications: Immediate notification sent for attempt ${attemptNumber}`
-        );
-      } else {
-        console.debug(
-          `[DEBUG] handleAttemptNotifications: Scheduling notification for later attempt ${attemptNumber}`
-        );
-        // Schedule for later attempts
-        const created = await prisma.notificationEvent.create({
-          data: {
-            leadId: lead.id,
-            step,
-            scheduledAt,
-            metadata: { attemptNumber },
-          },
-        });
-        console.debug(
-          `[DEBUG] handleAttemptNotifications: Scheduled notification: ${JSON.stringify(
-            created
-          )}`
-        );
-      }
+      // Enqueue through BullMQ even for immediate (delay 0) to avoid misses
+      const created = await enqueueNotificationEvent({
+        leadId: lead.id,
+        step,
+        scheduledAt,
+        attemptNumber,
+      });
+      console.debug(
+        `[DEBUG] handleAttemptNotifications: Enqueued notification: ${JSON.stringify(
+          created
+        )}`
+      );
     }
   }
 
@@ -810,62 +812,22 @@ export async function handleQuickAttemptNotifications({
       const copy = getAttemptCopy(step);
       const tz = pickTz(lead.timezone || QUEBEC_TZ);
       const now = moment().tz(tz);
-      const delayMs = FAST_NOTIFY ? 0 : (attemptNumber - 1) * 3 * 60 * 1000; // 0 for testing
+      const perAttemptQ = [NO_ANSWER_DELAY_MS_1, NO_ANSWER_DELAY_MS_2, NO_ANSWER_DELAY_MS_3];
+      const delayMs = FAST_NOTIFY ? 0 : perAttemptQ[Math.max(0, attemptNumber - 1)] || NO_ANSWER_DELAY_MS_1;
       const scheduledAt = now.clone().add(delayMs, "milliseconds").toDate();
       console.debug(
         `[DEBUG] handleQuickAttemptNotifications: Scheduling for ${scheduledAt}, delay: ${delayMs}ms`
       );
 
-      if (delayMs === 0) {
-        console.debug(
-          `[DEBUG] handleQuickAttemptNotifications: Sending immediate notification for attempt ${attemptNumber}`
-        );
-        // Send immediately for first attempt
-        await sendEmailAndSMS({
-          lead,
-          subject: copy.subject,
-          smsBody: copy.smsBody,
-          skipEmail: attemptNumber === 3,
-          context: {
-            attemptNumber,
-            outcome,
-            title: copy.title,
-            subtitle: copy.subtitle,
-            cta_text: copy.cta_text,
-            cta_link: BOOKING_URL,
-            bodyText: copy.bodyText,
-            closingText: copy.closingText,
-          },
-        });
-        try {
-          console.log("[NOTIFY] sent", {
-            leadId: lead.id,
-            step,
-            attemptNumber,
-          });
-        } catch {}
-        console.debug(
-          `[DEBUG] handleQuickAttemptNotifications: Immediate notification sent for attempt ${attemptNumber}`
-        );
-      } else {
-        console.debug(
-          `[DEBUG] handleQuickAttemptNotifications: Scheduling notification for later attempt ${attemptNumber}`
-        );
-        // Schedule for later attempts
-        const created = await prisma.notificationEvent.create({
-          data: {
-            leadId: lead.id,
-            step,
-            scheduledAt,
-            metadata: { attemptNumber },
-          },
-        });
-        console.debug(
-          `[DEBUG] handleQuickAttemptNotifications: Scheduled notification: ${JSON.stringify(
-            created
-          )}`
-        );
-      }
+      const created = await enqueueNotificationEvent({
+        leadId: lead.id,
+        step,
+        scheduledAt,
+        attemptNumber,
+      });
+      console.debug(
+        `[DEBUG] handleQuickAttemptNotifications: Enqueued notification: ${JSON.stringify(created)}`
+      );
     }
   }
 
@@ -1010,6 +972,40 @@ export async function processScheduledNotifications(limit = 500) {
         )}`
       );
     }
+  }
+}
+
+// -----------------------------------------------------------------------------
+// BullMQ worker entrypoint: run a single scheduled step (idempotent)
+// -----------------------------------------------------------------------------
+export async function runScheduledNotificationJob({
+  leadId,
+  step,
+  attemptNumber = 1,
+  eventId = null,
+}) {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId } });
+  if (!lead) return;
+
+  if (["ANSWERED_24H", "ANSWERED_48H"].includes(step)) {
+    await processScheduledNotification(lead, step, attemptNumber);
+  } else if (["ANSWERED_15M", "ANSWERED_30M"].includes(step)) {
+    await processQuickScheduledNotification(lead, step, attemptNumber);
+  } else if (["AFTER_2_NO_ANSWER", "AFTER_3_NO_ANSWER"].includes(step)) {
+    await processNoAnswerScheduledNotification(lead, step, attemptNumber);
+  } else if (
+    ["AFTER_2_NO_ANSWER_QUICK", "AFTER_3_NO_ANSWER_QUICK"].includes(step)
+  ) {
+    await processNoAnswerQuickScheduledNotification(lead, step, attemptNumber);
+  } else {
+    return; // Unknown step
+  }
+
+  // Best-effort cleanup of DB event row, if referenced
+  if (eventId) {
+    try {
+      await prisma.notificationEvent.delete({ where: { id: eventId } });
+    } catch (_) {}
   }
 }
 
