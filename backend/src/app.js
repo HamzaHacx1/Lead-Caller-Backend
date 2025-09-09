@@ -21,7 +21,6 @@ import n8n from "./tests/calls.js";
 import sms from "./routes/sms.js";
 import { startNotificationsWorker } from "./workers/notifications.worker.js";
 import { startCallsWorker } from "./workers/calls.worker.js";
-import { startNotificationsWorker } from "./workers/notifications.worker.js";
 
 const app = express();
 
