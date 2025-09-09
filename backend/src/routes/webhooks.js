@@ -419,6 +419,27 @@ r.post("/elevenlabs", async (req, res) => {
         `[DEBUG] POST /elevenlabs: Transcript array length: ${transcriptArr?.length}, string length: ${transcriptStr?.length}`
       );
 
+      // Optional transcript logging (structured payload)
+      try {
+        const logTranscripts = (process.env.LOG_TRANSCRIPTS ?? "0") === "1";
+        if (logTranscripts && transcriptStr) {
+          const maxChars = Math.max(
+            500,
+            Number(process.env.TRANSCRIPT_LOG_MAX_CHARS ?? 4000)
+          );
+          const snippet = transcriptStr.slice(0, maxChars);
+          console.log("[EL TRANSCRIPT][structured]", {
+            conversation_id: d.conversation_id || convoId || null,
+            length: transcriptStr.length,
+            snippet,
+          });
+        }
+      } catch (e) {
+        console.debug(
+          `[DEBUG] POST /elevenlabs: transcript logging failed: ${e?.message}`
+        );
+      }
+
       recordingUrl = d.recording_url || d.audio_url || null;
       console.debug(`[DEBUG] POST /elevenlabs: Recording URL: ${recordingUrl}`);
 
@@ -858,6 +879,27 @@ r.post("/elevenlabs", async (req, res) => {
     console.debug(
       `[DEBUG] POST /elevenlabs: Flat transcript array length: ${transcriptArr?.length}, string length: ${transcriptStr?.length}`
     );
+
+    // Optional transcript logging (flat payload)
+    try {
+      const logTranscripts = (process.env.LOG_TRANSCRIPTS ?? "0") === "1";
+      if (logTranscripts && transcriptStr) {
+        const maxChars = Math.max(
+          500,
+          Number(process.env.TRANSCRIPT_LOG_MAX_CHARS ?? 4000)
+        );
+        const snippet = transcriptStr.slice(0, maxChars);
+        console.log("[EL TRANSCRIPT][flat]", {
+          conversation_id: body.conversation_id || body.id || null,
+          length: transcriptStr.length,
+          snippet,
+        });
+      }
+    } catch (e) {
+      console.debug(
+        `[DEBUG] POST /elevenlabs: transcript logging failed (flat): ${e?.message}`
+      );
+    }
 
     recordingUrl = body?.recording_url || null;
     startedAt = body?.started_at ? new Date(body.started_at) : null;

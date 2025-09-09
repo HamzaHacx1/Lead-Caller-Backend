@@ -41,8 +41,6 @@ export async function callOutbound({
       email: lead.email || null,
       attempt: attemptNumber,
       timezone: lead.timezone,
-      policy_avoid_voicemail:
-        (process.env.EL_AVOID_VOICEMAIL ?? "1") === "1" ? true : false,
       ...metadata,
     },
     variables: {
@@ -50,36 +48,6 @@ export async function callOutbound({
       ...variables,
     },
   };
-
-  // Optionally apply overrides to reduce voicemail risk: do not speak first,
-  // and pass a dynamic flag the agent can use in its prompt/logic.
-  if ((process.env.EL_AVOID_VOICEMAIL ?? "1") === "1") {
-    const amdWaitSecs = Math.max(
-      0,
-      Number(process.env.EL_AMD_HUMAN_WAIT_SECS ?? 2)
-    );
-    body.conversation_initiation_client_data = {
-      conversation_config_override: {
-        agent: {
-          // Empty string -> agent waits for the user to start speaking.
-          first_message: "",
-          // Nudge the agent logic to avoid false voicemail positives while still skipping machines.
-          // This override only applies to this conversation.
-          prompt: {
-            prompt:
-              `When the call connects, do not speak first. Listen up to ${amdWaitSecs} seconds for any human greeting such as "hello".` +
-              ` If you hear a typical voicemail greeting, a long monologue without interaction, or a beep pattern, treat it as voicemail and end the call without speaking.` +
-              ` If you hear any human utterance (even a quick word), immediately engage and continue the conversation. When unsure, err on the side of engaging the human.`,
-          },
-        },
-      },
-      dynamic_variables: {
-        avoid_voicemail: true,
-        amd_human_wait_secs: amdWaitSecs,
-        ...variables,
-      },
-    };
-  }
 
   if (process.env.EL_WEBHOOK_ID) {
     body.post_call_webhook_id = process.env.EL_WEBHOOK_ID;
