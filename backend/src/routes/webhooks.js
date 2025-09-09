@@ -135,6 +135,9 @@ function mapOutcomeFromTranscription(data) {
     String(cs).toLowerCase() === "true" ||
     String(cs).toLowerCase() === "success";
   const term = String(data.metadata?.termination_reason || "").toLowerCase();
+  const callDur = Number(
+    data.metadata?.call_duration_secs ?? data.call_duration_secs ?? 0
+  );
   console.debug(
     `[DEBUG] mapOutcomeFromTranscription: call_successful: ${cs}, termination_reason: ${term}`
   );
@@ -190,6 +193,15 @@ function mapOutcomeFromTranscription(data) {
     console.debug(
       `[DEBUG] mapOutcomeFromTranscription: transcript check failed: ${e?.message}`
     );
+  }
+
+  // If remote party ended the call without any detected human utterance,
+  // treat it as NO_ANSWER rather than FAILED (user likely hung up immediately).
+  if (term.includes("remote party") || term.includes("ended by remote")) {
+    console.debug(
+      `[DEBUG] mapOutcomeFromTranscription: remote party hangup -> NO_ANSWER (dur=${callDur}s)`
+    );
+    return "NO_ANSWER";
   }
 
   if (
