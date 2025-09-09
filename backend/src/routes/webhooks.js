@@ -138,6 +138,7 @@ function mapOutcomeFromTranscription(data) {
   const callDur = Number(
     data.metadata?.call_duration_secs ?? data.call_duration_secs ?? 0
   );
+  const LOG_SIGNALS = (process.env.LOG_EL_SIGNALS ?? "0") === "1";
   console.debug(
     `[DEBUG] mapOutcomeFromTranscription: call_successful: ${cs}, termination_reason: ${term}`
   );
@@ -217,7 +218,6 @@ function mapOutcomeFromTranscription(data) {
   const transcriptHasVm = turns.some((m) =>
     VM_PATTERNS.some((p) => textOf(m).toLowerCase().includes(p))
   );
-  const LOG_SIGNALS = (process.env.LOG_EL_SIGNALS ?? "0") === "1";
   if (LOG_SIGNALS) {
     try {
       console.log("[EL SIGNALS]", {
