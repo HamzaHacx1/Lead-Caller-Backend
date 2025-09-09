@@ -47,7 +47,8 @@ async function sendPreCallNudge({ lead, attempt }) {
     </div>
   `;
 
-  if (lead.email && /\S+@\S+\.\S+/.test(String(lead.email))) {
+  const isTestLead = lead?.metadata?.test === true || lead?.metadata?.testMode === true;
+  if (!isTestLead && lead.email && /\S+@\S+\.\S+/.test(String(lead.email))) {
     try { await sendEmail({ to: safe(lead.email), subject, html }); } catch {}
   }
   if (lead.phone && String(lead.phone).replace(/[^\d+]/g, "").length >= 10) {
@@ -84,7 +85,7 @@ export function startCallsWorker() {
       const lead = await prisma.lead.findUnique({ where: { id: leadId } });
       if (!lead) return;
 
-      // 1) Pre-call nudge: exactly once, only for the first attempt
+      // 1) Pre-call nudge: exactly once, only for the first attempt (always 5 minutes before call)
       try {
         if (attemptNumber === 1) {
           const ok = await ensurePrecallOnce(lead.id, attemptId);

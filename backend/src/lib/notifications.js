@@ -502,7 +502,8 @@ async function sendEmailAndSMS({ lead, subject, context, smsBody, skipEmail }) {
   console.debug(`[DEBUG] sendEmailAndSMS: Context: ${JSON.stringify(baseCtx)}`);
 
   // Email
-  if (!skipEmail && hasEmail(lead)) {
+  const isTestLead = lead?.metadata?.test === true || lead?.metadata?.testMode === true;
+  if (!skipEmail && hasEmail(lead) && !isTestLead) {
     try {
       console.debug(
         `[DEBUG] sendEmailAndSMS: Rendering email template for leadId ${lead.id}`
@@ -530,11 +531,11 @@ async function sendEmailAndSMS({ lead, subject, context, smsBody, skipEmail }) {
   } else {
     console.log("[NOTIFY:email] skipped", {
       leadId: lead?.id,
-      reason: skipEmail ? "forced skip" : "no email",
+      reason: skipEmail ? "forced skip" : isTestLead ? "test_lead" : "no email",
     });
     console.debug(
       `[DEBUG] sendEmailAndSMS: Email skipped, reason: ${
-        skipEmail ? "forced skip" : "no email"
+        skipEmail ? "forced skip" : isTestLead ? "test_lead" : "no email"
       }`
     );
   }
@@ -830,33 +831,88 @@ export async function handleQuickAttemptNotifications({
   }
 
   if (outcome === "ANSWERED") {
-    // For attempt 1, we send an immediate email from the webhook path
-    // and only schedule an SMS-only follow-up via queue.
     const tz = pickTz(lead.timezone || QUEBEC_TZ);
     const now = moment().tz(tz);
     const isTest = lead?.metadata?.test === true || lead?.metadata?.testMode === true;
-    const A1 = isTest
-      ? Number(process.env.TEST_ANSWERED_DELAY_MS_1 ?? 90_000)
-      : ANSWERED_DELAY_MS_1;
-    const A2 = isTest
-      ? Number(process.env.TEST_ANSWERED_DELAY_MS_2 ?? 180_000)
-      : ANSWERED_DELAY_MS_2;
+
+    if (isTest) {
+      // TEST ROUTE: send email+SMS together after call
+      if (attemptNumber === 1) {
+        const step = "ANSWERED_15M"; // reuse copy
+        if (await ensureOnce(lead.id, `${step}_SCHEDULED`)) {
+          const scheduledAt = now.toDate(); // immediate
+          await enqueueNotificationEvent({
+            leadId: lead.id,
+            step,
+            scheduledAt,
+            attemptNumber,
+          });
+        }
+        return;
+      }
+      if (attemptNumber === 2) {
+        const step = "ANSWERED_15M"; // reuse copy
+        if (await ensureOnce(lead.id, `${step}_SCHEDULED`)) {
+          const scheduledAt = now.clone().add(120_000, "milliseconds").toDate();
+          await enqueueNotificationEvent({
+            leadId: lead.id,
+            step,
+            scheduledAt,
+            attemptNumber,
+          });
+        }
+        return;
+      }
+      if (attemptNumber === 3) {
+        const step = "ANSWERED_30M"; // reuse copy
+        if (await ensureOnce(lead.id, `${step}_SCHEDULED`)) {
+          const scheduledAt = now.clone().add(120_000, "milliseconds").toDate();
+          await enqueueNotificationEvent({
+            leadId: lead.id,
+            step,
+            scheduledAt,
+            attemptNumber,
+          });
+        }
+        return;
+      }
+      return;
+    }
+
+    // NORMAL: keep previous gaps and flows
+    const A1 = ANSWERED_DELAY_MS_1;
+    const A2 = ANSWERED_DELAY_MS_2;
 
     if (attemptNumber === 1) {
-      const step = "ANSWERED_1_SMS_ONLY";
-      if (await ensureOnce(lead.id, `${step}_SCHEDULED`)) {
-        const scheduledAt = now.clone().add(A1, "milliseconds").toDate();
-        await enqueueNotificationEvent({
-          leadId: lead.id,
-          step,
-          scheduledAt,
-          attemptNumber,
-        });
+      {
+        const step = "ANSWERED_1_SMS_ONLY";
+        if (await ensureOnce(lead.id, `${step}_SCHEDULED`)) {
+          const scheduledAt = now.clone().add(A1, "milliseconds").toDate();
+          await enqueueNotificationEvent({
+            leadId: lead.id,
+            step,
+            scheduledAt,
+            attemptNumber,
+          });
+        }
       }
+      {
+        const step = "ANSWERED_30M";
+        if (await ensureOnce(lead.id, `${step}_SCHEDULED`)) {
+          const scheduledAt = now.clone().add(A2, "milliseconds").toDate();
+          await enqueueNotificationEvent({
+            leadId: lead.id,
+            step,
+            scheduledAt,
+            attemptNumber,
+          });
+        }
+      }
+      await scheduleDelayedNotifications(lead);
       return;
     }
     if (attemptNumber === 2) {
-      const step = "ANSWERED_15M"; // reuse step, custom copy based on attempt 2
+      const step = "ANSWERED_15M";
       if (await ensureOnce(lead.id, `${step}_SCHEDULED`)) {
         const scheduledAt = now.clone().add(A1, "milliseconds").toDate();
         await enqueueNotificationEvent({
@@ -866,10 +922,11 @@ export async function handleQuickAttemptNotifications({
           attemptNumber,
         });
       }
+      await scheduleDelayedNotifications(lead);
       return;
     }
     if (attemptNumber === 3) {
-      const step = "ANSWERED_30M"; // reuse step, custom copy based on attempt 3
+      const step = "ANSWERED_30M";
       if (await ensureOnce(lead.id, `${step}_SCHEDULED`)) {
         const scheduledAt = now.clone().add(A2, "milliseconds").toDate();
         await enqueueNotificationEvent({
@@ -879,6 +936,7 @@ export async function handleQuickAttemptNotifications({
           attemptNumber,
         });
       }
+      await scheduleDelayedNotifications(lead);
       return;
     }
     return;
@@ -902,14 +960,13 @@ export async function handleQuickAttemptNotifications({
       const tz = pickTz(lead.timezone || QUEBEC_TZ);
       const now = moment().tz(tz);
       const isTest = lead?.metadata?.test === true || lead?.metadata?.testMode === true;
-      const perAttemptQ = isTest
-        ? [
-            Number(process.env.TEST_NO_ANSWER_DELAY_MS_1 ?? 90_000),
-            Number(process.env.TEST_NO_ANSWER_DELAY_MS_2 ?? 90_000),
-            Number(process.env.TEST_NO_ANSWER_DELAY_MS_3 ?? 90_000),
-          ]
-        : [NO_ANSWER_DELAY_MS_1, NO_ANSWER_DELAY_MS_2, NO_ANSWER_DELAY_MS_3];
-      const delayMs = FAST_NOTIFY ? 0 : perAttemptQ[Math.max(0, attemptNumber - 1)] ?? perAttemptQ[0];
+      let delayMs;
+      if (isTest) {
+        delayMs = attemptNumber === 1 ? 0 : 120_000;
+      } else {
+        const perAttemptQ = [NO_ANSWER_DELAY_MS_1, NO_ANSWER_DELAY_MS_2, NO_ANSWER_DELAY_MS_3];
+        delayMs = FAST_NOTIFY ? 0 : perAttemptQ[Math.max(0, attemptNumber - 1)] ?? perAttemptQ[0];
+      }
       const scheduledAt = now.clone().add(delayMs, "milliseconds").toDate();
       console.debug(
         `[DEBUG] handleQuickAttemptNotifications: Scheduling for ${scheduledAt}, delay: ${delayMs}ms`
@@ -974,6 +1031,7 @@ export async function processScheduledNotifications(limit = 500) {
           "ANSWERED_48H",
           "ANSWERED_15M",
           "ANSWERED_30M",
+          "ANSWERED_1_SMS_ONLY",
           // NEW: NO_ANSWER scheduled steps
           "AFTER_1_NO_ANSWER",
           "AFTER_2_NO_ANSWER",
@@ -1144,6 +1202,20 @@ export async function runScheduledNotificationJob({
     await processScheduledNotification(lead, step, attemptNumber);
   } else if (["ANSWERED_15M", "ANSWERED_30M"].includes(step)) {
     await processQuickScheduledNotification(lead, step, attemptNumber);
+  } else if (["ANSWERED_1_SMS_ONLY"].includes(step)) {
+    // SMS-only follow-up after first answered call
+    const copy = {
+      subject: "",
+      smsBody:
+        "Salut dY`<\nSuite A� ton appel avec notre agent, nous avons crAcAc ton profil temporaire. Pour complActer ton dossier, il ne te reste qu�?TA� joindre tes derniers documents sur notre lien sAccurisAc ! Vas dans tes courriels tu le retrouveras lA�.\nPar la suite, ton compte sera crAcAc !",
+    };
+    await sendEmailAndSMS({
+      lead,
+      subject: copy.subject,
+      smsBody: copy.smsBody,
+      skipEmail: true,
+      context: { attemptNumber, outcome: "ANSWERED" },
+    });
   } else if (["AFTER_1_NO_ANSWER", "AFTER_2_NO_ANSWER", "AFTER_3_NO_ANSWER"].includes(step)) {
     await processNoAnswerScheduledNotification(lead, step, attemptNumber);
   } else if (
@@ -1252,7 +1324,10 @@ async function processNoAnswerScheduledNotification(lead, step, attemptNumber) {
       lead,
       subject: copy.subject,
       smsBody: copy.smsBody,
-      skipEmail: attemptNumber === 3, // mirror your immediate path
+      // Skip email for test leads as well; keep attempt 3 skip for prod
+      skipEmail:
+        (lead?.metadata?.test === true || lead?.metadata?.testMode === true) ||
+        attemptNumber === 3,
       context: {
         attemptNumber,
         outcome: "NO_ANSWER",

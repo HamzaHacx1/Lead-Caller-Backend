@@ -777,9 +777,10 @@ r.post("/elevenlabs", async (req, res) => {
           console.debug(`[DEBUG] POST /elevenlabs: Notifications triggered`);
         }
 
-      // Immediate email for first ANSWERED attempt (summary, if available)
+      // Immediate email for first ANSWERED attempt (non-test leads only)
       try {
-        if (outcome === 'ANSWERED' && currentAttemptNumber === 1) {
+        const isTestLead = lead?.metadata?.test === true || lead?.metadata?.testMode === true;
+        if (!isTestLead && outcome === 'ANSWERED' && currentAttemptNumber === 1) {
           await sendAnsweredImmediateEmail(lead, {
             availability: dc?.availability ?? null,
             salary_expectations: dc?.salary_expectations ?? null,
@@ -1104,7 +1105,7 @@ r.post("/elevenlabs", async (req, res) => {
     }
 
     try {
-      if (["NO_ANSWER", "FAILED"].includes(outcome)) {
+      if (["ANSWERED", "NO_ANSWER", "FAILED"].includes(outcome)) {
         console.debug(
           `[DEBUG] POST /elevenlabs: Triggering notifications for outcome ${outcome} (flat)`
         );
