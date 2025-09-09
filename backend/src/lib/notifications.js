@@ -511,8 +511,18 @@ async function sendEmailAndSMS({ lead, subject, context, smsBody, skipEmail }) {
       console.debug(
         `[DEBUG] sendEmailAndSMS: Email HTML generated, length: ${html.length}`
       );
-      await sendEmail({ to: String(lead.email).trim(), subject, html });
-      console.log("[NOTIFY:email] sent", { leadId: lead.id });
+      const info = await sendEmail({
+        to: String(lead.email).trim(),
+        subject,
+        html,
+      });
+      console.log("[NOTIFY:email] sent", {
+        leadId: lead.id,
+        accepted: info?.accepted,
+        rejected: info?.rejected,
+        messageId: info?.messageId,
+        response: info?.response,
+      });
     } catch (e) {
       console.warn("[NOTIFY:email] failed", e?.message);
       console.debug(`[DEBUG] sendEmailAndSMS: Email send failed: ${e.message}`);
