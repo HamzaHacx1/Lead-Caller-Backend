@@ -46,7 +46,17 @@ export async function sendSMS({ to, body, statusCallback } = {}) {
 
   if (statusCallback) messagePayload.statusCallback = statusCallback;
 
+  console.log("[TWILIO] sendSMS: creating message", {
+    to,
+    using: TWILIO_MESSAGING_SERVICE_SID ? "messaging_service" : "from_number",
+  });
   const res = await client.messages.create(messagePayload);
+  console.log("[TWILIO] sendSMS: response", {
+    sid: res.sid,
+    status: res.status,
+    to: res.to,
+    errorCode: res.errorCode || null,
+  });
   return {
     sid: res.sid,
     status: res.status,
@@ -101,7 +111,21 @@ export async function sendEmail({
     attachments,
   };
 
+  console.log("[SMTP] sendEmail: sending", {
+    to,
+    from: mail.from,
+    subject,
+    host: SMTP_HOST,
+    port: Number(SMTP_PORT),
+    secure: String(SMTP_SECURE).toLowerCase() === "true",
+  });
   const info = await transporter.sendMail(mail);
+  console.log("[SMTP] sendEmail: response", {
+    messageId: info.messageId,
+    accepted: info.accepted,
+    rejected: info.rejected,
+    response: info.response,
+  });
 
   return {
     messageId: info.messageId,

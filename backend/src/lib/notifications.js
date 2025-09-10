@@ -181,6 +181,14 @@ async function enqueueNotificationEvent({ leadId, step, scheduledAt, attemptNumb
   // Enqueue BullMQ job
   const queue = getNotificationQueue();
   const jobId = `lead:${leadId}:step:${step}`; // idempotent per lead+step
+  console.log("[NOTIFY] enqueue", {
+    leadId,
+    step,
+    attemptNumber,
+    scheduledAt: when.toISOString(),
+    delay,
+    jobId,
+  });
   await queue.add(
     "notify-step",
     { leadId, step, attemptNumber, eventId: event.id },
@@ -538,6 +546,11 @@ async function sendEmailAndSMS({ lead, subject, context, smsBody, skipEmail }) {
       console.debug(
         `[DEBUG] sendEmailAndSMS: Email HTML generated, length: ${html.length}`
       );
+      console.log("[NOTIFY:email] sending", {
+        leadId: lead.id,
+        to: String(lead.email).trim(),
+        subject,
+      });
       const info = await sendEmail({
         to: String(lead.email).trim(),
         subject,
@@ -575,6 +588,7 @@ async function sendEmailAndSMS({ lead, subject, context, smsBody, skipEmail }) {
         typeof smsBody === "function" ? smsBody(baseCtx) : String(smsBody);
       console.debug(`[DEBUG] sendEmailAndSMS: SMS body: ${body}`);
       if (body) {
+        console.log("[NOTIFY:sms] sending", { leadId: lead.id, to });
         await sendSMS({ to, body });
         console.log("[NOTIFY:sms] sent", { leadId: lead.id });
       }
@@ -1106,6 +1120,11 @@ export async function processScheduledNotifications(limit = 500) {
 // Immediate email for first answered call (uses summary variables if provided)
 // -----------------------------------------------------------------------------
 export async function sendAnsweredImmediateEmail(lead, vars = {}) {
+  console.log("[NOTIFY] answered immediate: preparing", {
+    leadId: lead?.id,
+    hasEmail: !!lead?.email,
+    hasPhone: !!lead?.phone,
+  });
   const subject = "Salut 👋 Suite à ton appel avec notre agent, nous avons créé ton profil temporaire.";
   const firstNonEmpty = (...vals) => {
     for (const v of vals) {
@@ -1154,6 +1173,7 @@ export async function sendAnsweredImmediateEmail(lead, vars = {}) {
     smsBody,
     skipEmail: false,
   });
+  console.log("[NOTIFY] answered immediate: dispatched", { leadId: lead?.id });
 }
 // -----------------------------------------------------------------------------
 // BullMQ worker entrypoint: run a single scheduled step (idempotent)
@@ -1164,6 +1184,12 @@ export async function runScheduledNotificationJob({
   attemptNumber = 1,
   eventId = null,
 }) {
+  console.log("[NOTIFY] worker: runScheduledNotificationJob", {
+    leadId,
+    step,
+    attemptNumber,
+    eventId,
+  });
   const lead = await prisma.lead.findUnique({ where: { id: leadId } });
   if (!lead) return;
 

@@ -556,6 +556,12 @@ r.post("/elevenlabs", async (req, res) => {
         // Immediate after-call email + SMS (uses structured variables when available)
         try {
           if (outcome === 'ANSWERED') {
+            console.log('[NOTIFY] answered immediate: invoking (structured)', {
+              leadId: lead.id,
+              email: lead.email,
+              phone: lead.phone,
+              emailFromMeta,
+            });
             await sendAnsweredImmediateEmail(lead, {
               translated_job_types: d?.analysis?.translated_job_types || null,
               job_type: dc?.job_type ?? null,
@@ -796,6 +802,16 @@ r.post("/elevenlabs", async (req, res) => {
       console.debug(
         `[DEBUG] POST /elevenlabs: Updating lead status for ${lead.id}`
       );
+      // Sync lead email from metadata if present (structured path)
+      try {
+        if (emailFromMeta && (!lead.email || lead.email !== emailFromMeta)) {
+          await prisma.lead.update({ where: { id: lead.id }, data: { email: emailFromMeta } });
+          lead = await prisma.lead.findUnique({ where: { id: lead.id } });
+          console.debug(`[DEBUG] POST /elevenlabs: Lead email synced from metadata: ${emailFromMeta}`);
+        }
+      } catch (e) {
+        console.warn('[WEBHOOK] failed syncing lead email from metadata', e?.message);
+      }
       await prisma.lead.update({
         where: { id: lead.id },
         data: {
@@ -1166,6 +1182,12 @@ r.post("/elevenlabs", async (req, res) => {
       if (outcome === 'ANSWERED') {
         try {
           const completion_link = process.env.BOOKING_URL || null;
+          console.log('[NOTIFY] answered immediate: invoking (flat)', {
+            leadId: lead.id,
+            email: lead.email,
+            phone: lead.phone,
+            emailFromMeta,
+          });
           await sendAnsweredImmediateEmail(lead, {
             translated_job_types: getDC('translated_job_types'),
             job_type: getDC('job_type'),
