@@ -2,20 +2,30 @@ import sanitizeHtml from "sanitize-html";
 import moment from "moment-timezone";
 
 import { renderTemplate as renderHbsFile } from "../helpers/renderTemplates.js";
+import { getNotificationQueue } from "../lib/redisQueue.js";
 import { sendEmail, sendSMS } from "../helpers/notify.js";
 import { START, END, pickTz } from "../lib/schedule.js";
 import { QUEBEC_TZ } from "../lib/quebecTime.js";
 import prisma from "./prisma.js";
-import { getNotificationQueue } from "../lib/redisQueue.js";
 
 const { SUPPORT_NUMBER, APP_NAME = "EmploiRapide" } = process.env;
 const FAST_NOTIFY = (process.env.FAST_NOTIFY ?? "1") === "1"; // send immediately for testing
 // Configurable delays (ms)
-const ANSWERED_DELAY_MS_1 = Number(process.env.ANSWERED_DELAY_MS_1 ?? 15 * 60 * 1000);
-const ANSWERED_DELAY_MS_2 = Number(process.env.ANSWERED_DELAY_MS_2 ?? 30 * 60 * 1000);
-const NO_ANSWER_DELAY_MS_1 = Number(process.env.NO_ANSWER_DELAY_MS_1 ?? 10 * 60 * 1000);
-const NO_ANSWER_DELAY_MS_2 = Number(process.env.NO_ANSWER_DELAY_MS_2 ?? 10 * 60 * 1000);
-const NO_ANSWER_DELAY_MS_3 = Number(process.env.NO_ANSWER_DELAY_MS_3 ?? 10 * 60 * 1000);
+const ANSWERED_DELAY_MS_1 = Number(
+  process.env.ANSWERED_DELAY_MS_1 ?? 15 * 60 * 1000
+);
+const ANSWERED_DELAY_MS_2 = Number(
+  process.env.ANSWERED_DELAY_MS_2 ?? 30 * 60 * 1000
+);
+const NO_ANSWER_DELAY_MS_1 = Number(
+  process.env.NO_ANSWER_DELAY_MS_1 ?? 10 * 60 * 1000
+);
+const NO_ANSWER_DELAY_MS_2 = Number(
+  process.env.NO_ANSWER_DELAY_MS_2 ?? 10 * 60 * 1000
+);
+const NO_ANSWER_DELAY_MS_3 = Number(
+  process.env.NO_ANSWER_DELAY_MS_3 ?? 10 * 60 * 1000
+);
 const BOOKING_URL =
   process.env.BOOKING_URL || "https://emploirapide.ca/documents";
 
@@ -25,7 +35,9 @@ function isTestLead(lead) {
     const m = lead?.metadata || {};
     const isTruthy = (v) =>
       v === true || v === 1 || v === "1" || String(v).toLowerCase() === "true";
-    return isTruthy(m.test) || isTruthy(m.testMode) || isTruthy(m.call_now_test);
+    return (
+      isTruthy(m.test) || isTruthy(m.testMode) || isTruthy(m.call_now_test)
+    );
   } catch (_) {
     return false;
   }
@@ -164,8 +176,14 @@ async function ensureOnce(leadId, step) {
 // -----------------------------------------------------------------------------
 // BullMQ scheduling helper (persist event + enqueue delayed job)
 // -----------------------------------------------------------------------------
-async function enqueueNotificationEvent({ leadId, step, scheduledAt, attemptNumber = 1 }) {
-  const when = scheduledAt instanceof Date ? scheduledAt : new Date(scheduledAt);
+async function enqueueNotificationEvent({
+  leadId,
+  step,
+  scheduledAt,
+  attemptNumber = 1,
+}) {
+  const when =
+    scheduledAt instanceof Date ? scheduledAt : new Date(scheduledAt);
   const delay = Math.max(0, when.getTime() - Date.now());
 
   // Persist a DB row for traceability
@@ -337,7 +355,9 @@ function getAttemptCopy(step, isAnswered = false) {
     if (step === "ANSWERED_30M") {
       // Third aftercall (test flow +10m) mirrors the 48H copy
       const copy = {
-        subject: sanitize("On peut pas t’aider tant que ton profil est en pause"),
+        subject: sanitize(
+          "On peut pas t’aider tant que ton profil est en pause"
+        ),
         title: sanitize("Dernier rappel !"),
         cta_text: sanitize("👉 Compléter mon dossier"),
         cta_link: BOOKING_URL,
@@ -377,7 +397,10 @@ function getAttemptCopy(step, isAnswered = false) {
         <p>J’ai essayé de t’appeler aujourd’hui pour avancer dans ta recherche d’emploi, mais je n’ai pas réussi à te joindre.</p>
         <p>Pas de souci — tu peux compléter ton inscription en ligne ici (ça prend 3 minutes) :</p>`),
       closingText: sanitize("À bientôt,"),
-      smsBody: () => sanitize(`Simon d’${APP_NAME} — J’ai tenté de t’appeler pour ta recherche d’emploi. Rappelle moi !`),
+      smsBody: () =>
+        sanitize(
+          `Simon d’${APP_NAME} — J’ai tenté de t’appeler pour ta recherche d’emploi. Rappelle moi !`
+        ),
     };
     return copy;
   }
@@ -391,8 +414,13 @@ function getAttemptCopy(step, isAnswered = false) {
         <p>Salut,</p>
         <p>Hier, j’ai tenté de te joindre pour ta recherche d’emploi, mais je n’ai pas eu de retour.</p>
         <p>Tu peux gagner du temps en complétant ton inscription directement ici :</p>`),
-      closingText: sanitize("On pourra ainsi te proposer des postes plus rapidement. À très vite."),
-      smsBody: () => sanitize(`Simon d’${APP_NAME} ici — je n’ai toujours pas eu ton appel. Peux-tu me rappeler ? 📞`),
+      closingText: sanitize(
+        "On pourra ainsi te proposer des postes plus rapidement. À très vite."
+      ),
+      smsBody: () =>
+        sanitize(
+          `Simon d’${APP_NAME} ici — je n’ai toujours pas eu ton appel. Peux-tu me rappeler ? 📞`
+        ),
     };
     return copy;
   }
@@ -793,7 +821,9 @@ export async function handleAttemptNotifications({
             Number(process.env.TEST_NO_ANSWER_DELAY_MS_3 ?? 90_000),
           ]
         : [NO_ANSWER_DELAY_MS_1, NO_ANSWER_DELAY_MS_2, NO_ANSWER_DELAY_MS_3];
-      const delayMs = FAST_NOTIFY ? 0 : perAttempt[Math.max(0, attemptNumber - 1)] ?? perAttempt[0];
+      const delayMs = FAST_NOTIFY
+        ? 0
+        : perAttempt[Math.max(0, attemptNumber - 1)] ?? perAttempt[0];
       const scheduledAt = now.clone().add(delayMs, "milliseconds").toDate();
       console.debug(
         `[DEBUG] handleAttemptNotifications: Scheduling for ${scheduledAt}, delay: ${delayMs}ms`
@@ -883,7 +913,10 @@ export async function handleQuickAttemptNotifications({
       ];
       for (const p of steps) {
         if (await ensureOnce(lead.id, `${p.step}_SCHEDULED`)) {
-          const scheduledAt = now.clone().add(p.delayMs, "milliseconds").toDate();
+          const scheduledAt = now
+            .clone()
+            .add(p.delayMs, "milliseconds")
+            .toDate();
           await enqueueNotificationEvent({
             leadId: lead.id,
             step: p.step,
@@ -936,8 +969,14 @@ export async function handleQuickAttemptNotifications({
       if (isTest) {
         delayMs = attemptNumber === 1 ? 0 : 120_000;
       } else {
-        const perAttemptQ = [NO_ANSWER_DELAY_MS_1, NO_ANSWER_DELAY_MS_2, NO_ANSWER_DELAY_MS_3];
-        delayMs = FAST_NOTIFY ? 0 : perAttemptQ[Math.max(0, attemptNumber - 1)] ?? perAttemptQ[0];
+        const perAttemptQ = [
+          NO_ANSWER_DELAY_MS_1,
+          NO_ANSWER_DELAY_MS_2,
+          NO_ANSWER_DELAY_MS_3,
+        ];
+        delayMs = FAST_NOTIFY
+          ? 0
+          : perAttemptQ[Math.max(0, attemptNumber - 1)] ?? perAttemptQ[0];
       }
       const scheduledAt = now.clone().add(delayMs, "milliseconds").toDate();
       console.debug(
@@ -951,7 +990,9 @@ export async function handleQuickAttemptNotifications({
         attemptNumber,
       });
       console.debug(
-        `[DEBUG] handleQuickAttemptNotifications: Enqueued notification: ${JSON.stringify(created)}`
+        `[DEBUG] handleQuickAttemptNotifications: Enqueued notification: ${JSON.stringify(
+          created
+        )}`
       );
     }
   }
@@ -1125,35 +1166,59 @@ export async function sendAnsweredImmediateEmail(lead, vars = {}) {
     hasEmail: !!lead?.email,
     hasPhone: !!lead?.phone,
   });
-  const subject = "Salut 👋 Suite à ton appel avec notre agent, nous avons créé ton profil temporaire.";
+  const subject =
+    "Salut 👋 Suite à ton appel avec notre agent, nous avons créé ton profil temporaire.";
   const firstNonEmpty = (...vals) => {
     for (const v of vals) {
       if (v != null && String(v).trim() !== "") return String(v);
     }
     return null;
   };
-  const safe = (v, dflt) => String(v == null || String(v).trim() === "" ? dflt : v);
+  const safe = (v, dflt) =>
+    String(v == null || String(v).trim() === "" ? dflt : v);
 
   const jobTypes = firstNonEmpty(vars.translated_job_types, vars.job_type);
   const available = firstNonEmpty(vars.available_to_start, vars.availability);
-  const salary = firstNonEmpty(vars.salary_expectation, vars.salary_expectations);
-  const categories = firstNonEmpty(vars.translated_user_categories, vars.job_field);
+  const salary = firstNonEmpty(
+    vars.salary_expectation,
+    vars.salary_expectations
+  );
+  const categories = firstNonEmpty(
+    vars.translated_user_categories,
+    vars.job_field
+  );
   const completionLink = firstNonEmpty(vars.completion_link, BOOKING_URL);
 
   const ctx = {
     title: "",
-    subtitle: "Suite à ton appel avec notre agent, nous avons créé ton profil temporaire.",
+    subtitle:
+      "Suite à ton appel avec notre agent, nous avons créé ton profil temporaire.",
     cta_text: "👉 Compléter mon dossier",
     cta_link: completionLink || BOOKING_URL,
     bodyText: `
       <p>Salut 👋</p>
       <p>Voici quelques informations résumées :</p>
-      <p><strong>Type de poste(s) recherché(s) :</strong><br/>${safe(jobTypes, "Non spécifié")}</p>
-      <p><strong>Disponible pour le travail :</strong><br/>${safe(available, "Non spécifiée")}</p>
-      <p><strong>Attentes salariales :</strong><br/>${safe(salary, "Non spécifiées")}</p>
-      <p><strong>Catégories d’emploi :</strong><br/>${safe(categories, "Non spécifiées")}</p>
+      <p><strong>Type de poste(s) recherché(s) :</strong><br/>${safe(
+        jobTypes,
+        "Non spécifié"
+      )}</p>
+      <p><strong>Disponible pour le travail :</strong><br/>${safe(
+        available,
+        "Non spécifiée"
+      )}</p>
+      <p><strong>Attentes salariales :</strong><br/>${safe(
+        salary,
+        "Non spécifiées"
+      )}</p>
+      <p><strong>Catégories d’emploi :</strong><br/>${safe(
+        categories,
+        "Non spécifiées"
+      )}</p>
       <p>Pour compléter ton dossier, il ne te reste qu’à joindre tes derniers documents sur notre lien sécurisé !</p>
-      <p><strong>👉 Compléter mon dossier</strong> (${safe(completionLink, BOOKING_URL)})</p>
+      <p><strong>👉 Compléter mon dossier</strong> (${safe(
+        completionLink,
+        BOOKING_URL
+      )})</p>
       <p>Par la suite, ton compte sera créé !</p>
       <p>Fais ça maintenant, pendant que c’est frais dans ta tête 😄</p>
     `,
@@ -1211,10 +1276,18 @@ export async function runScheduledNotificationJob({
       skipEmail: true,
       context: { attemptNumber, outcome: "ANSWERED" },
     });
-  } else if (["AFTER_1_NO_ANSWER", "AFTER_2_NO_ANSWER", "AFTER_3_NO_ANSWER"].includes(step)) {
+  } else if (
+    ["AFTER_1_NO_ANSWER", "AFTER_2_NO_ANSWER", "AFTER_3_NO_ANSWER"].includes(
+      step
+    )
+  ) {
     await processNoAnswerScheduledNotification(lead, step, attemptNumber);
   } else if (
-    ["AFTER_1_NO_ANSWER_QUICK", "AFTER_2_NO_ANSWER_QUICK", "AFTER_3_NO_ANSWER_QUICK"].includes(step)
+    [
+      "AFTER_1_NO_ANSWER_QUICK",
+      "AFTER_2_NO_ANSWER_QUICK",
+      "AFTER_3_NO_ANSWER_QUICK",
+    ].includes(step)
   ) {
     await processNoAnswerQuickScheduledNotification(lead, step, attemptNumber);
   } else {
