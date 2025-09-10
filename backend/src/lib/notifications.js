@@ -239,20 +239,23 @@ function getAttemptCopy(step, isAnswered = false) {
         title: sanitize("On t’attend encore"),
         cta_text: sanitize("👉 Compléter mon dossier"),
         bodyText: sanitize(`
-          <p>On a vu que t’as commencé ton inscription…</br>
-          Mais ton profil est encore bloqué à l’étape 1 😬</br>
-          Il te reste à :</br>
+          <p>Salut 👋</p>
+          <p>On a vu que t’as commencé ton inscription…</p>
+          <p>Mais ton profil est encore bloqué à l’étape 1 😬</p>
+          <p>Il te reste à :</p>
           <ul>
             <li>✅ Ajouter ton CV</li>
             <li>✅ Joindre un spécimen de chèque</li>
-          </ul></p>`),
+          </ul>
+          <p>👉 Compléter mon dossier (${BOOKING_URL})</p>
+          <p>Pas de stress. Juste une p’tite étape de plus, et tu pourras recevoir des offres.</p>
+          <p>On garde ta place au chaud 🔥</p>
+          <p><strong>Si tu as déjà rempli ton profil, ignore ce message 😄</strong></p>`),
         cta_link: BOOKING_URL,
-        closingText: sanitize(
-          "Pas de stress. Juste une p’tite étape de plus, et tu pourras recevoir des offres. On garde ta place au chaud 🔥"
-        ),
+        closingText: sanitize("— L’équipe Emploi Rapide"),
         smsBody: () =>
           sanitize(
-            `T’as commencé ton inscription, mais ton profil est incomplet. On t’a renvoyé le courriel. Pense à vérifier les spams si jamais.`
+            `T’as commencé ton inscription et on t’a renvoyé le courriel. Pense à vérifier les spams si jamais et si tu as déjà complété celui-ci ignore notre message 😄`
           ),
       };
       console.debug(
@@ -271,13 +274,16 @@ function getAttemptCopy(step, isAnswered = false) {
         cta_text: sanitize("👉 Compléter mon dossier"),
         cta_link: BOOKING_URL,
         bodyText: sanitize(`
-          <p>Ton inscription est bien commencée… mais sans CV ni spécimen de chèque, on ne peut pas avancer.
-          C’est comme vouloir passer une entrevue sans se présenter 😅</p>
-          <p>Sinon, ton compte va rester en veille. Tu pourras toujours revenir plus tard, mais tu vas manquer des opportunités maintenant.</p>`),
-        closingText: sanitize("On est prêts quand toi tu l’es 💼"),
+          <p>Salut !!</p>
+          <p>Ton inscription est bien commencée… mais sans CV ni spécimen de chèque, on ne peut pas avancer.</p>
+          <p>C’est comme vouloir passer une entrevue sans se présenter 😅</p>
+          <p>👉 Compléter mon dossier (${BOOKING_URL})</p>
+          <p>Sinon, ton compte va rester en veille. Tu pourras toujours revenir plus tard, mais tu vas manquer des opportunités maintenant.</p>
+          <p>On est prêts quand toi tu l’es 💼</p>`),
+        closingText: sanitize("— Emploi Rapide"),
         smsBody: () =>
           sanitize(
-            `Dernier rappel : on t’a écrit pour finaliser ton profil. Jette un œil dans ta boîte courriel (et dans les indésirables aussi!).`
+            `Dernier rappel : on t’a écrit pour finaliser ton profil. Jette un œil dans ta boîte courriel (et dans les indésirables aussi et ignore si c'est fait !).`
           ),
       };
       console.debug(
@@ -288,25 +294,29 @@ function getAttemptCopy(step, isAnswered = false) {
       return copy;
     }
     if (step === "ANSWERED_15M") {
+      // Reuse the same copy as the "second aftercall" for test flow (+5 minutes)
       const copy = {
-        subject: sanitize("T’as ton CV prêt ?"),
-        title: sanitize("On t’attend pour finaliser"),
+        subject: sanitize("T’as ton CV à portée de main ?"),
+        title: sanitize("On t’attend encore"),
         cta_text: sanitize("👉 Compléter mon dossier"),
         bodyText: sanitize(`
-          <p>Tu viens de commencer ton inscription…</br>
-          Ton profil est encore à l’étape 1 😬</br>
-          Il te reste à :</br>
+          <p>Salut 👋</p>
+          <p>On a vu que t’as commencé ton inscription…</p>
+          <p>Mais ton profil est encore bloqué à l’étape 1 😬</p>
+          <p>Il te reste à :</p>
           <ul>
             <li>✅ Ajouter ton CV</li>
             <li>✅ Joindre un spécimen de chèque</li>
-          </ul></p>`),
+          </ul>
+          <p>👉 Compléter mon dossier (${BOOKING_URL})</p>
+          <p>Pas de stress. Juste une p’tite étape de plus, et tu pourras recevoir des offres.</p>
+          <p>On garde ta place au chaud 🔥</p>
+          <p><strong>Si tu as déjà rempli ton profil, ignore ce message 😄</strong></p>`),
         cta_link: BOOKING_URL,
-        closingText: sanitize(
-          "Juste une petite étape et t’es prêt pour des offres ! 🔥"
-        ),
+        closingText: sanitize("— L’équipe Emploi Rapide"),
         smsBody: () =>
           sanitize(
-            `Ton profil est incomplet. Check ton courriel pour finaliser (vérifie les spams !).`
+            `T’as commencé ton inscription et on t’a renvoyé le courriel. Pense à vérifier les spams si jamais et si tu as déjà complété celui-ci ignore notre message 😄`
           ),
       };
       console.debug(
@@ -317,18 +327,23 @@ function getAttemptCopy(step, isAnswered = false) {
       return copy;
     }
     if (step === "ANSWERED_30M") {
+      // Third aftercall (test flow +10m) mirrors the 48H copy
       const copy = {
-        subject: sanitize("Ton profil est en attente !"),
-        title: sanitize("Dernier rappel rapide !"),
+        subject: sanitize("On peut pas t’aider tant que ton profil est en pause"),
+        title: sanitize("Dernier rappel !"),
         cta_text: sanitize("👉 Compléter mon dossier"),
         cta_link: BOOKING_URL,
         bodyText: sanitize(`
-          <p>Ton inscription est en cours, mais sans CV ni spécimen de chèque, on ne peut pas avancer.</p>
-          <p>Finalise vite pour ne pas rater des opportunités !</p>`),
-        closingText: sanitize("On t’attend 💼"),
+          <p>Salut !!</p>
+          <p>Ton inscription est bien commencée… mais sans CV ni spécimen de chèque, on ne peut pas avancer.</p>
+          <p>C’est comme vouloir passer une entrevue sans se présenter 😅</p>
+          <p>👉 Compléter mon dossier (${BOOKING_URL})</p>
+          <p>Sinon, ton compte va rester en veille. Tu pourras toujours revenir plus tard, mais tu vas manquer des opportunités maintenant.</p>
+          <p>On est prêts quand toi tu l’es 💼</p>`),
+        closingText: sanitize("— Emploi Rapide"),
         smsBody: () =>
           sanitize(
-            `Rappel : finalise ton profil ! Vérifie ton courriel (et les spams).`
+            `Dernier rappel : on t’a écrit pour finaliser ton profil. Jette un œil dans ta boîte courriel (et dans les indésirables aussi et ignore si c'est fait !).`
           ),
       };
       console.debug(
@@ -847,11 +862,10 @@ export async function handleQuickAttemptNotifications({
     const isTest = isTestLead(lead);
 
     if (isTest) {
-      // Test flow: immediate, +5m, +10m (email + SMS)
+      // Test flow: schedule +5m and +10m (immediate is sent at webhook time)
       const steps = [
-        { step: "ANSWERED_15M", delayMs: 0 },
-        { step: "ANSWERED_30M", delayMs: 5 * 60 * 1000 },
-        { step: "ANSWERED_24H", delayMs: 10 * 60 * 1000 }, // reuse 24H copy for 10m in test
+        { step: "ANSWERED_15M", delayMs: 5 * 60 * 1000 },
+        { step: "ANSWERED_30M", delayMs: 10 * 60 * 1000 },
       ];
       for (const p of steps) {
         if (await ensureOnce(lead.id, `${p.step}_SCHEDULED`)) {
@@ -867,9 +881,8 @@ export async function handleQuickAttemptNotifications({
       return;
     }
 
-    // Production flow: immediate, +24h, +48h (email + SMS)
+    // Production flow: schedule +24h and +48h (immediate is sent at webhook time)
     const steps = [
-      { step: "ANSWERED_15M", delayMs: 0 },
       { step: "ANSWERED_24H", delayMs: 24 * 60 * 60 * 1000 },
       { step: "ANSWERED_48H", delayMs: 48 * 60 * 60 * 1000 },
     ];
@@ -1093,41 +1106,52 @@ export async function processScheduledNotifications(limit = 500) {
 // Immediate email for first answered call (uses summary variables if provided)
 // -----------------------------------------------------------------------------
 export async function sendAnsweredImmediateEmail(lead, vars = {}) {
-  const subject = "Suite à ton appel — complète ton dossier";
-  const safe = (v, dflt = "Non spécifié") =>
-    String(v == null || v === "" ? dflt : v);
+  const subject = "Salut 👋 Suite à ton appel avec notre agent, nous avons créé ton profil temporaire.";
+  const firstNonEmpty = (...vals) => {
+    for (const v of vals) {
+      if (v != null && String(v).trim() !== "") return String(v);
+    }
+    return null;
+  };
+  const safe = (v, dflt) => String(v == null || String(v).trim() === "" ? dflt : v);
+
+  const jobTypes = firstNonEmpty(vars.translated_job_types, vars.job_type);
+  const available = firstNonEmpty(vars.available_to_start, vars.availability);
+  const salary = firstNonEmpty(vars.salary_expectation, vars.salary_expectations);
+  const categories = firstNonEmpty(vars.translated_user_categories, vars.job_field);
+  const completionLink = firstNonEmpty(vars.completion_link, BOOKING_URL);
 
   const ctx = {
     title: "",
-    subtitle: "",
-    cta_text: "Compléter mon dossier",
-    cta_link: BOOKING_URL,
+    subtitle: "Suite à ton appel avec notre agent, nous avons créé ton profil temporaire.",
+    cta_text: "👉 Compléter mon dossier",
+    cta_link: completionLink || BOOKING_URL,
     bodyText: `
       <p>Salut 👋</p>
-      <p>Suite à ton appel avec notre agent, nous avons créé ton profil temporaire.</p>
       <p>Voici quelques informations résumées :</p>
-      <p><strong>Type de poste(s) recherché(s) :</strong><br/>${safe(
-        vars.translated_job_types || vars.job_type
-      )}</p>
-      <p><strong>Disponible pour le travail :</strong><br/>${safe(
-        vars.available_to_start || vars.availability
-      )}</p>
-      <p><strong>Attentes salariales :</strong><br/>${safe(
-        vars.salary_expectation || vars.salary_expectations
-      )}</p>
-      <p><strong>Catégories d’emploi :</strong><br/>${safe(
-        vars.translated_user_categories || vars.job_field
-      )}</p>
+      <p><strong>Type de poste(s) recherché(s) :</strong><br/>${safe(jobTypes, "Non spécifié")}</p>
+      <p><strong>Disponible pour le travail :</strong><br/>${safe(available, "Non spécifiée")}</p>
+      <p><strong>Attentes salariales :</strong><br/>${safe(salary, "Non spécifiées")}</p>
+      <p><strong>Catégories d’emploi :</strong><br/>${safe(categories, "Non spécifiées")}</p>
       <p>Pour compléter ton dossier, il ne te reste qu’à joindre tes derniers documents sur notre lien sécurisé !</p>
+      <p><strong>👉 Compléter mon dossier</strong> (${safe(completionLink, BOOKING_URL)})</p>
+      <p>Par la suite, ton compte sera créé !</p>
+      <p>Fais ça maintenant, pendant que c’est frais dans ta tête 😄</p>
     `,
     closingText: "À très vite,\n L’équipe Emploi Rapide 🚀",
   };
+
+  const smsBody = [
+    "Salut 👋",
+    "Suite à ton appel avec notre agent, nous avons créé ton profil temporaire. Pour compléter ton dossier, il ne te reste qu’à joindre tes derniers documents sur notre lien sécurisé ! Vas dans tes courriels tu le retrouveras là.",
+    "Par la suite, ton compte sera créé !",
+  ].join("\n");
 
   await sendEmailAndSMS({
     lead,
     subject,
     context: ctx,
-    smsBody: null,
+    smsBody,
     skipEmail: false,
   });
 }

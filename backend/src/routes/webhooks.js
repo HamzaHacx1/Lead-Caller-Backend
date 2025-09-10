@@ -552,6 +552,25 @@ r.post("/elevenlabs", async (req, res) => {
             snippet,
           });
         }
+
+        // Immediate after-call email + SMS (uses structured variables when available)
+        try {
+          if (outcome === 'ANSWERED') {
+            await sendAnsweredImmediateEmail(lead, {
+              translated_job_types: d?.analysis?.translated_job_types || null,
+              job_type: dc?.job_type ?? null,
+              available_to_start: d?.analysis?.available_to_start || null,
+              availability: dc?.availability ?? null,
+              salary_expectation: d?.analysis?.salary_expectation || null,
+              salary_expectations: dc?.salary_expectations ?? null,
+              translated_user_categories: d?.analysis?.translated_user_categories || null,
+              job_field: dc?.job_field ?? null,
+              completion_link: process.env.BOOKING_URL || null,
+            });
+          }
+        } catch (e) {
+          console.warn('[NOTIFY] answered immediate send failed', e?.message);
+        }
       } catch (e) {
         console.debug(
           `[DEBUG] POST /elevenlabs: transcript logging failed: ${e?.message}`
@@ -1142,6 +1161,25 @@ r.post("/elevenlabs", async (req, res) => {
         console.debug(
           `[DEBUG] POST /elevenlabs: Notifications triggered (flat)`
         );
+      }
+      // Immediate after-call email + SMS (flat payloads)
+      if (outcome === 'ANSWERED') {
+        try {
+          const completion_link = process.env.BOOKING_URL || null;
+          await sendAnsweredImmediateEmail(lead, {
+            translated_job_types: getDC('translated_job_types'),
+            job_type: getDC('job_type'),
+            available_to_start: getDC('available_to_start'),
+            availability: getDC('availability'),
+            salary_expectation: getDC('salary_expectation'),
+            salary_expectations: getDC('salary_expectations'),
+            translated_user_categories: getDC('translated_user_categories'),
+            job_field: getDC('job_field'),
+            completion_link,
+          });
+        } catch (e) {
+          console.warn('[NOTIFY] answered immediate send failed (flat)', e?.message);
+        }
       }
     } catch (e) {
       console.warn("[NOTIFY] attempt notifications failed (flat)", e?.message);
