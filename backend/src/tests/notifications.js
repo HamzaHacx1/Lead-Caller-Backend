@@ -6,7 +6,7 @@ import {
   handleAttemptNotifications,
   handleQuickAttemptNotifications,
 } from "../lib/notifications.js";
-import { renderTemplate } from "../helpers/renderTemplates.js";
+import { renderTemplate as renderHbsFile } from "../helpers/renderTemplates.js";
 import { sendEmail, sendSMS } from "../helpers/notify.js";
 import { callOutbound } from "../lib/elevenlabs.js";
 import { QUEBEC_TZ } from "../lib/quebecTime.js";
@@ -95,15 +95,21 @@ r.post("/test-flow", async (req, res) => {
           if (attemptNumber === 1) {
             try {
               if (sanitizedEmail) {
-                const html = renderTemplate("notify.html", {
-                  dashboard_link: "https://emploirapide.ca/documents",
+                const html = renderHbsFile("no_answer_base.hbs", {
+                  appName: APP_NAME,
+                  bookingUrl: process.env.BOOKING_URL || process.env.DASHBOARD_URL,
+                  supportNumber: "",
+                  lead: { fullName: sanitizedName },
+                  title: "Tu veux un job ?",
+                  subtitle: "Il te reste une seule étape 🚀",
+                  bodyText:
+                    "<p>Tu viens tout juste de remplir notre formulaire pour trouver un emploi rapidement 🙌</p>" +
+                    "<p><strong>Bonne nouvelle : t’es à 1 clic de finaliser ton inscription sur notre plateforme.</strong></p>",
+                  cta_text: "➡️ INSCRIPTION ICI",
+                  cta_link: process.env.BOOKING_URL || process.env.DASHBOARD_URL,
+                  closingText: "À bientôt !",
                 });
-                await sendEmail({
-                  to: sanitizedEmail,
-                  subject: "Tu veux un job ? Il te reste une seule étape !",
-                  html,
-                  text: `Salut 👋\n\nTu viens de remplir notre formulaire 🙌\nBonne nouvelle : finalise ton inscription ici : ${process.env.DASHBOARD_URL}/complete-profile\n\nÀ bientôt !`,
-                });
+                await sendEmail({ to: sanitizedEmail, subject: "Tu veux un job ? Il te reste une seule étape !", html });
               }
               await sendSMS({
                 to: sanitizedPhone,
@@ -210,15 +216,21 @@ r.post("/test-flow", async (req, res) => {
           if (attemptNumber === 1) {
             try {
               if (sanitizedEmail) {
-                const html = renderTemplate("notify.html", {
-                  dashboard_link: "https://emploirapide.ca/documents",
+                const html = renderHbsFile("no_answer_base.hbs", {
+                  appName: APP_NAME,
+                  bookingUrl: process.env.BOOKING_URL || process.env.DASHBOARD_URL,
+                  supportNumber: "",
+                  lead: { fullName: sanitizedName },
+                  title: "Tu veux un job ?",
+                  subtitle: "Il te reste une seule étape 🚀",
+                  bodyText:
+                    "<p>Tu viens tout juste de remplir notre formulaire pour trouver un emploi rapidement 🙌</p>" +
+                    "<p><strong>Bonne nouvelle : t’es à 1 clic de finaliser ton inscription sur notre plateforme.</strong></p>",
+                  cta_text: "➡️ INSCRIPTION ICI",
+                  cta_link: process.env.BOOKING_URL || process.env.DASHBOARD_URL,
+                  closingText: "À bientôt !",
                 });
-                await sendEmail({
-                  to: sanitizedEmail,
-                  subject: "Tu veux un job ? Il te reste une seule étape !",
-                  html,
-                  text: `Salut 👋\n\nTu viens de remplir notre formulaire 🙌\nBonne nouvelle : finalise ton inscription ici : ${process.env.DASHBOARD_URL}/complete-profile\n\nÀ bientôt !`,
-                });
+                await sendEmail({ to: sanitizedEmail, subject: "Tu veux un job ? Il te reste une seule étape !", html });
               }
               await sendSMS({
                 to: sanitizedPhone,

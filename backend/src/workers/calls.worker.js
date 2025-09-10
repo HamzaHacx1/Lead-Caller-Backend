@@ -14,41 +14,33 @@ const PRECALL_NUDGE_MS = Math.max(
 async function sendPreCallNudge({ lead, attempt }) {
   // Using notifications logic directly to keep templates consistent
   const { sendEmail, sendSMS } = await import("../helpers/notify.js");
-  const sanitizeHtml = (await import("sanitize-html")).default;
+  const { renderTemplate: renderHbsFile } = await import("../helpers/renderTemplates.js");
   const SUPPORT_NUMBER = process.env.SUPPORT_NUMBER || "";
   const BOOKING_URL =
     process.env.BOOKING_URL || process.env.DASHBOARD_URL || "https://emploirapide.ca/documents";
 
-  const safe = (s) =>
-    sanitizeHtml(String(s || ""), { allowedTags: [], allowedAttributes: {} });
 
   const subject = "Tu veux un job ? Il te reste une seule étape !";
   const smsBody =
     "Salut, c'est Simon d'Emploi Rapide — je viens de t'envoyer un courriel important. Va le voir maintenant.";
 
-  const html = `
-    <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.55;color:#0f172a">
-      <p>Salut!</p>
-      <p>Tu viens de remplir notre formulaire pour trouver un emploi rapidement.</p>
-      <p><strong>Bonne nouvelle : t'es à 1 clic de finaliser ton inscription.</strong></p>
-      <p>Clique ici pour compléter ton profil (3 minutes max) :</p>
-      <p style="margin:16px 0">
-        <a href="${BOOKING_URL}" target="_blank" rel="noopener"
-           style="display:inline-block;background:#111827;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:600">
-          INSCRIPTION ICI
-        </a>
-      </p>
-      <p>Tout est fait pour aller vite. On s'occupe de tout.</p>
-      ${
-        SUPPORT_NUMBER
-          ? `<p style="font-size:12px;color:#64748b">Besoin d'aide ? Écris-nous ou appelle ${SUPPORT_NUMBER}.</p>`
-          : ""
-      }
-    </div>
-  `;
+  const html = renderHbsFile("no_answer_base.hbs", {
+    appName: process.env.APP_NAME || "Emploi Rapide",
+    bookingUrl: BOOKING_URL,
+    supportNumber: SUPPORT_NUMBER || "",
+    lead,
+    title: "Tu veux un job ?",
+    subtitle: "Il te reste une seule étape 🚀",
+    bodyText:
+      "<p>Tu viens de remplir notre formulaire pour trouver un emploi rapidement.</p>" +
+      "<p><strong>Bonne nouvelle : t'es à 1 clic de finaliser ton inscription.</strong></p>",
+    cta_text: "INSCRIPTION ICI",
+    cta_link: BOOKING_URL,
+    closingText: "",
+  });
 
   if (lead.email && /\S+@\S+\.\S+/.test(String(lead.email))) {
-    try { await sendEmail({ to: safe(lead.email), subject, html }); } catch {}
+    try { await sendEmail({ to: String(lead.email).trim(), subject, html }); } catch {}
   }
   if (lead.phone && String(lead.phone).replace(/[^\d+]/g, "").length >= 10) {
     try { await sendSMS({ to: String(lead.phone).trim(), body: smsBody }); } catch {}

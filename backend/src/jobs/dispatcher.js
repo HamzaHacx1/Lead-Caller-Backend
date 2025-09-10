@@ -2,6 +2,7 @@ import sanitizeHtml from "sanitize-html";
 import moment from "moment-timezone";
 
 import { sendEmail, sendSMS } from "../helpers/notify.js";
+import { renderTemplate as renderHbsFile } from "../helpers/renderTemplates.js";
 import { START, END, pickTz } from "../lib/schedule.js";
 import { callOutbound } from "../lib/elevenlabs.js";
 import { QUEBEC_TZ } from "../lib/quebecTime.js";
@@ -83,27 +84,20 @@ export async function sendPreCallNudge(lead, attempt) {
   const safe = (s) =>
     sanitizeHtml(String(s || ""), { allowedTags: [], allowedAttributes: {} });
 
-  const html = `
-    <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.55;color:#0f172a">
-      <p>Salut 👋</p>
-      <p>Tu viens tout juste de remplir notre formulaire pour trouver un emploi rapidement 🙌</p>
-      <p><strong>Bonne nouvelle : t’es à 1 clic de finaliser ton inscription sur notre plateforme.</strong></p>
-      <p>👉 Clique ici pour compléter ton profil (3 minutes max) :</p>
-      <p style="margin:16px 0">
-        <a href="${BOOKING_URL}" target="_blank" rel="noopener"
-           style="display:inline-block;background:#111827;color:#ffffff;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:600">
-          ➡️ INSCRIPTION ICI
-        </a>
-      </p>
-      <p>Tout est fait pour aller vite. Pas besoin de tout réécrire — on s’occupe de tout 💪</p>
-      <p>À bientôt !</p>
-      ${
-        SUPPORT_NUMBER
-          ? `<p style="font-size:12px;color:#64748b">Besoin d’aide ? Écris-nous ou appelle ${SUPPORT_NUMBER}.</p>`
-          : ""
-      }
-    </div>
-  `;
+  const html = renderHbsFile("no_answer_base.hbs", {
+    appName: APP_NAME,
+    bookingUrl: BOOKING_URL,
+    supportNumber: SUPPORT_NUMBER || "",
+    lead,
+    title: "Tu veux un job ?",
+    subtitle: "Il te reste une seule étape 🚀",
+    bodyText:
+      "<p>Tu viens tout juste de remplir notre formulaire pour trouver un emploi rapidement 🙌</p>" +
+      "<p><strong>Bonne nouvelle : t’es à 1 clic de finaliser ton inscription sur notre plateforme.</strong></p>",
+    cta_text: "➡️ INSCRIPTION ICI",
+    cta_link: BOOKING_URL,
+    closingText: "À bientôt !",
+  });
 
   if (lead.email && /\S+@\S+\.\S+/.test(String(lead.email))) {
     try {
