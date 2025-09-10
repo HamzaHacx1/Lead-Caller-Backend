@@ -827,13 +827,6 @@ r.post("/elevenlabs", async (req, res) => {
         );
       }
 
-      } catch (e) {
-        console.warn("[NOTIFY] attempt notifications failed", e?.message);
-        console.debug(
-          `[DEBUG] POST /elevenlabs: Notification error: ${e.message}`
-        );
-      }
-
       /** ---------- Push to external backend ---------- */
       console.debug(`[DEBUG] POST /elevenlabs: Posting to external backend`);
       postToExternal({
