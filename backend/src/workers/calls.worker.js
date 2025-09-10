@@ -81,8 +81,25 @@ export function startCallsWorker() {
       if (!leadId || !attemptId || !attemptNumber || !callAtUnix) {
         throw new Error("Invalid call job data");
       }
-      const lead = await prisma.lead.findUnique({ where: { id: leadId } });
-      if (!lead) return;
+      const [lead, attempt] = await Promise.all([
+        prisma.lead.findUnique({ where: { id: leadId } }),
+        prisma.callAttempt.findUnique({ where: { id: attemptId } }),
+      ]);
+      if (!lead || !attempt) return;
+
+      // If this attempt is no longer scheduled, or the lead has already ANSWERED, skip entirely
+      if (attempt.status !== "SCHEDULED" || lead.status === "ANSWERED") {
+        // Best-effort: mark attempt as canceled to avoid rescheduling churn
+        try {
+          if (attempt.status === "SCHEDULED") {
+            await prisma.callAttempt.update({
+              where: { id: attemptId },
+              data: { status: "CANCELED" },
+            });
+          }
+        } catch {}
+        return;
+      }
 
       // 1) Pre-call nudge: exactly once, only for the first attempt (always 5 minutes before call)
       try {
@@ -98,15 +115,23 @@ export function startCallsWorker() {
       const waitMs = Math.max(0, callAtUnix * 1000 - Date.now());
       if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
 
-      // 3) Place the outbound call
+      // 3) Place the outbound call (re-check that attempt/lead are still valid)
       try {
+        const [freshLead, freshAttempt] = await Promise.all([
+          prisma.lead.findUnique({ where: { id: leadId } }),
+          prisma.callAttempt.findUnique({ where: { id: attemptId } }),
+        ]);
+        if (!freshLead || !freshAttempt) return;
+        if (freshLead.status === "ANSWERED" || freshAttempt.status !== "SCHEDULED") {
+          return;
+        }
         await callOutbound({
-          to: lead.phone,
+          to: freshLead.phone,
           lead: {
-            id: lead.id,
-            fullName: lead.fullName,
-            email: lead.email,
-            timezone: lead.timezone || QUEBEC_TZ,
+            id: freshLead.id,
+            fullName: freshLead.fullName,
+            email: freshLead.email,
+            timezone: freshLead.timezone || QUEBEC_TZ,
             scheduledAt: new Date(callAtUnix * 1000),
           },
           attemptNumber,

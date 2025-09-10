@@ -847,108 +847,42 @@ export async function handleQuickAttemptNotifications({
     const isTest = isTestLead(lead);
 
     if (isTest) {
-      // TEST ROUTE: send email+SMS together after call
-      if (attemptNumber === 1) {
-        const step = "ANSWERED_15M"; // reuse copy
-        if (await ensureOnce(lead.id, `${step}_SCHEDULED`)) {
-          const scheduledAt = now.toDate(); // immediate
+      // Test flow: immediate, +5m, +10m (email + SMS)
+      const steps = [
+        { step: "ANSWERED_15M", delayMs: 0 },
+        { step: "ANSWERED_30M", delayMs: 5 * 60 * 1000 },
+        { step: "ANSWERED_24H", delayMs: 10 * 60 * 1000 }, // reuse 24H copy for 10m in test
+      ];
+      for (const p of steps) {
+        if (await ensureOnce(lead.id, `${p.step}_SCHEDULED`)) {
+          const scheduledAt = now.clone().add(p.delayMs, "milliseconds").toDate();
           await enqueueNotificationEvent({
             leadId: lead.id,
-            step,
+            step: p.step,
             scheduledAt,
             attemptNumber,
           });
         }
-        return;
-      }
-      if (attemptNumber === 2) {
-        const step = "ANSWERED_15M"; // reuse copy
-        if (await ensureOnce(lead.id, `${step}_SCHEDULED`)) {
-          const scheduledAt = now.clone().add(120_000, "milliseconds").toDate();
-          await enqueueNotificationEvent({
-            leadId: lead.id,
-            step,
-            scheduledAt,
-            attemptNumber,
-          });
-        }
-        return;
-      }
-      if (attemptNumber === 3) {
-        const step = "ANSWERED_30M"; // reuse copy
-        if (await ensureOnce(lead.id, `${step}_SCHEDULED`)) {
-          const scheduledAt = now.clone().add(120_000, "milliseconds").toDate();
-          await enqueueNotificationEvent({
-            leadId: lead.id,
-            step,
-            scheduledAt,
-            attemptNumber,
-          });
-        }
-        return;
       }
       return;
     }
 
-    // NORMAL: keep previous gaps and flows
-    const A1 = ANSWERED_DELAY_MS_1;
-    const A2 = ANSWERED_DELAY_MS_2;
-
-    if (attemptNumber === 1) {
-      {
-        const step = "ANSWERED_1_SMS_ONLY";
-        if (await ensureOnce(lead.id, `${step}_SCHEDULED`)) {
-          const scheduledAt = now.clone().add(A1, "milliseconds").toDate();
-          await enqueueNotificationEvent({
-            leadId: lead.id,
-            step,
-            scheduledAt,
-            attemptNumber,
-          });
-        }
-      }
-      {
-        const step = "ANSWERED_30M";
-        if (await ensureOnce(lead.id, `${step}_SCHEDULED`)) {
-          const scheduledAt = now.clone().add(A2, "milliseconds").toDate();
-          await enqueueNotificationEvent({
-            leadId: lead.id,
-            step,
-            scheduledAt,
-            attemptNumber,
-          });
-        }
-      }
-      await scheduleDelayedNotifications(lead);
-      return;
-    }
-    if (attemptNumber === 2) {
-      const step = "ANSWERED_15M";
-      if (await ensureOnce(lead.id, `${step}_SCHEDULED`)) {
-        const scheduledAt = now.clone().add(A1, "milliseconds").toDate();
+    // Production flow: immediate, +24h, +48h (email + SMS)
+    const steps = [
+      { step: "ANSWERED_15M", delayMs: 0 },
+      { step: "ANSWERED_24H", delayMs: 24 * 60 * 60 * 1000 },
+      { step: "ANSWERED_48H", delayMs: 48 * 60 * 60 * 1000 },
+    ];
+    for (const p of steps) {
+      if (await ensureOnce(lead.id, `${p.step}_SCHEDULED`)) {
+        const scheduledAt = now.clone().add(p.delayMs, "milliseconds").toDate();
         await enqueueNotificationEvent({
           leadId: lead.id,
-          step,
+          step: p.step,
           scheduledAt,
           attemptNumber,
         });
       }
-      await scheduleDelayedNotifications(lead);
-      return;
-    }
-    if (attemptNumber === 3) {
-      const step = "ANSWERED_30M";
-      if (await ensureOnce(lead.id, `${step}_SCHEDULED`)) {
-        const scheduledAt = now.clone().add(A2, "milliseconds").toDate();
-        await enqueueNotificationEvent({
-          leadId: lead.id,
-          step,
-          scheduledAt,
-          attemptNumber,
-        });
-      }
-      await scheduleDelayedNotifications(lead);
-      return;
     }
     return;
   }

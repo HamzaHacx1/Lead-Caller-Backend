@@ -801,22 +801,30 @@ r.post("/elevenlabs", async (req, res) => {
           console.debug(`[DEBUG] POST /elevenlabs: Notifications triggered`);
         }
 
-      // Immediate email for first ANSWERED attempt (non-test leads only)
-      try {
-        const isTestLead = lead?.metadata?.test === true || lead?.metadata?.testMode === true;
-        if (!isTestLead && outcome === 'ANSWERED' && currentAttemptNumber === 1) {
-          await sendAnsweredImmediateEmail(lead, {
-            availability: dc?.availability ?? null,
-            salary_expectations: dc?.salary_expectations ?? null,
-            job_type: dc?.job_type ?? null,
-            job_field: dc?.job_field ?? null,
-            translated_job_types: null,
-            translated_user_categories: null,
-            completion_link: process.env.BOOKING_URL || null,
-          });
+        // If answered, cancel any future scheduled attempts and clear nextScheduledAt
+        if (outcome === "ANSWERED") {
+          try {
+            await prisma.callAttempt.updateMany({
+              where: {
+                leadId: lead.id,
+                status: "SCHEDULED",
+                attemptNumber: { gt: currentAttemptNumber },
+              },
+              data: { status: "CANCELED" },
+            });
+            await prisma.lead.update({
+              where: { id: lead.id },
+              data: { nextScheduledAt: null },
+            });
+          } catch (e) {
+            console.warn("[WEBHOOK] failed to cancel future attempts after ANSWERED", e?.message);
+          }
         }
       } catch (e) {
-        console.warn('[NOTIFY] answered immediate email failed', e?.message);
+        console.warn("[NOTIFY] attempt notifications failed", e?.message);
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Notification error: ${e.message}`
+        );
       }
 
       } catch (e) {
@@ -856,9 +864,9 @@ r.post("/elevenlabs", async (req, res) => {
         );
       });
 
-      // ---------- Next attempt policy (always up to MAX_ATTEMPTS) ----------
-      // Call every lead up to MAX_ATTEMPTS times regardless of outcome.
-      if (attemptsOnLead < MAX_ATTEMPTS) {
+      // ---------- Next attempt policy ----------
+      // Do not schedule any further calls if the user answered at least once.
+      if (attemptsOnLead < MAX_ATTEMPTS && outcome !== "ANSWERED") {
         console.debug(
           `[DEBUG] POST /elevenlabs: Scheduling next attempt for outcome ${outcome}`
         );
@@ -1211,7 +1219,8 @@ r.post("/elevenlabs", async (req, res) => {
       );
     });
 
-    if (attemptsCount < MAX_ATTEMPTS) {
+    // Do not schedule next attempts if this lead has ANSWERED
+    if (attemptsCount < MAX_ATTEMPTS && outcome !== "ANSWERED") {
       console.debug(
         `[DEBUG] POST /elevenlabs: Scheduling next attempt (flat), attemptsCount: ${attemptsCount}`
       );
@@ -1296,6 +1305,23 @@ r.post("/elevenlabs", async (req, res) => {
               .format("YYYY-MM-DD HH:mm:ss z"),
           });
         }
+      }
+    } else if (outcome === "ANSWERED") {
+      try {
+        await prisma.callAttempt.updateMany({
+          where: {
+            leadId: lead.id,
+            status: "SCHEDULED",
+            attemptNumber: { gt: attemptsCount },
+          },
+          data: { status: "CANCELED" },
+        });
+        await prisma.lead.update({
+          where: { id: lead.id },
+          data: { nextScheduledAt: null },
+        });
+      } catch (e) {
+        console.warn("[WEBHOOK] failed to cancel future attempts after ANSWERED (flat)", e?.message);
       }
     }
 
