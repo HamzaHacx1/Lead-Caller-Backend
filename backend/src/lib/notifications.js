@@ -8,7 +8,6 @@ import { START, END, pickTz } from "../lib/schedule.js";
 import { QUEBEC_TZ } from "../lib/quebecTime.js";
 import prisma from "./prisma.js";
 
-
 const { SUPPORT_NUMBER, APP_NAME = "EmploiRapide" } = process.env;
 const FAST_NOTIFY = (process.env.FAST_NOTIFY ?? "1") === "1"; // send immediately for testing
 // Configurable delays (ms)
@@ -305,12 +304,14 @@ function getAttemptCopy(step, isAnswered = false) {
         cta_text: sanitize("👉 Compléter mon dossier"),
         cta_link: BOOKING_URL,
         bodyText: sanitize(`
-          <p>Salut !!</p>
-          <p>Ton inscription est bien commencée… mais sans CV ni spécimen de chèque, on ne peut pas avancer.</p>
-          <p>C’est comme vouloir passer une entrevue sans se présenter 😅</p>
-          <p>👉 Compléter mon dossier (${BOOKING_URL})</p>
-          <p>Sinon, ton compte va rester en veille. Tu pourras toujours revenir plus tard, mais tu vas manquer des opportunités maintenant.</p>
-          <p>On est prêts quand toi tu l’es 💼</p>`),
+         <p>Salut !!<br></p>
+  <p>Ton inscription est bien commencée… mais sans CV ni spécimen de chèque, on ne peut pas avancer.<br>
+     C’est comme vouloir passer une entrevue sans se présenter 😅<br></p>
+  <p>👉 Compléter mon dossier (${BOOKING_URL})<br></p>
+  <p>Sinon, ton compte va rester en veille.<br>
+     Tu pourras toujours revenir plus tard, mais tu vas manquer des opportunités maintenant.<br></p>
+  <p>On est prêts quand toi tu l’es 💼</p>
+`),
         closingText: sanitize("— Emploi Rapide"),
         smsBody: () =>
           sanitize(
@@ -331,18 +332,20 @@ function getAttemptCopy(step, isAnswered = false) {
         title: sanitize("On t’attend encore"),
         cta_text: sanitize("👉 Compléter mon dossier"),
         bodyText: sanitize(`
-          <p>Salut 👋</p>
-          <p>On a vu que t’as commencé ton inscription…</p>
-          <p>Mais ton profil est encore bloqué à l’étape 1 😬</p>
-          <p>Il te reste à :</p>
-          <ul>
-            <li>✅ Ajouter ton CV</li>
-            <li>✅ Joindre un spécimen de chèque</li>
-          </ul>
-          <p>👉 Compléter mon dossier (${BOOKING_URL})</p>
-          <p>Pas de stress. Juste une p’tite étape de plus, et tu pourras recevoir des offres.</p>
-          <p>On garde ta place au chaud 🔥</p>
-          <p><strong>Si tu as deja remplis ton profil ignore ce message 😄</strong></p>`),
+          <p>Salut 👋<br></p>
+  <p>On a vu que t’as commencé ton inscription…<br></p>
+  <p>Mais ton profil est encore bloqué à l’étape 1 😬<br></p>
+  <p>Il forwardedte reste à :<br></p>
+  <ul>
+    <li>✅ Ajouter ton CV</li>
+    <li>✅ Joindre un spécimen de chèque</li>
+  </ul>
+  <p>👉 Compléter mon dossier (${BOOKING_URL})<br></p>
+  <p>Pas de stress.<br>
+     Juste une p’tite étape de plus, et tu pourras recevoir des offres.<br></p>
+  <p>On garde ta place au chaud 🔥<br></p>
+  <p><strong>Si tu as déjà rempli ton profil, ignore ce message 😄</strong></p>
+`),
         cta_link: BOOKING_URL,
         closingText: sanitize("— L’équipe Emploi Rapide"),
         smsBody: () =>
@@ -404,7 +407,11 @@ function getAttemptCopy(step, isAnswered = false) {
       closingText: sanitize("À bientôt,"),
       smsBody: (ctx) =>
         sanitize(
-          `Salut ${ctx?.lead?.firstName || ''}, c'est Simon d'${APP_NAME}. J'ai tenté de t'appeler. Tu peux compléter ton inscription ici: ${ctx.bookingUrl}`
+          `Salut ${
+            ctx?.lead?.firstName || ""
+          }, c'est Simon d'${APP_NAME}. J'ai tenté de t'appeler. Tu peux compléter ton inscription ici: ${
+            ctx.bookingUrl
+          }`
         ),
     };
     return copy;
@@ -424,7 +431,11 @@ function getAttemptCopy(step, isAnswered = false) {
       ),
       smsBody: (ctx) =>
         sanitize(
-          `Rebonjour ${ctx?.lead?.firstName || ''}. Pour avancer plus vite, complète ton dossier ici: ${ctx.bookingUrl}`
+          `Rebonjour ${
+            ctx?.lead?.firstName || ""
+          }. Pour avancer plus vite, complète ton dossier ici: ${
+            ctx.bookingUrl
+          }`
         ),
     };
     return copy;
@@ -440,7 +451,11 @@ function getAttemptCopy(step, isAnswered = false) {
       closingText: sanitize(""),
       smsBody: (ctx) =>
         sanitize(
-          `Dernier suivi ${ctx?.lead?.firstName || ''} — veux-tu toujours de l'aide pour trouver un emploi ? Réponds "Oui" et je te rappelle, ou complète ici: ${ctx.bookingUrl}`
+          `Dernier suivi ${
+            ctx?.lead?.firstName || ""
+          } — veux-tu toujours de l'aide pour trouver un emploi ? Réponds "Oui" et je te rappelle, ou complète ici: ${
+            ctx.bookingUrl
+          }`
         ),
     };
     return copy;
@@ -457,7 +472,11 @@ function getAttemptCopy(step, isAnswered = false) {
     closingText: sanitize("À bientôt !"),
     smsBody: (ctx) =>
       sanitize(
-        `Salut ${ctx?.lead?.firstName || ''}, c'est Simon d'${APP_NAME}. J'ai tenté de t'appeler. Tu peux compléter ton inscription ici: ${ctx.bookingUrl}`
+        `Salut ${
+          ctx?.lead?.firstName || ""
+        }, c'est Simon d'${APP_NAME}. J'ai tenté de t'appeler. Tu peux compléter ton inscription ici: ${
+          ctx.bookingUrl
+        }`
       ),
   };
 
@@ -475,7 +494,11 @@ function getAttemptCopy(step, isAnswered = false) {
       ),
       smsBody: (ctx) =>
         sanitize(
-          `Rebonjour ${ctx?.lead?.firstName || ''}. Pour avancer plus vite, complète ton dossier ici: ${ctx.bookingUrl}`
+          `Rebonjour ${
+            ctx?.lead?.firstName || ""
+          }. Pour avancer plus vite, complète ton dossier ici: ${
+            ctx.bookingUrl
+          }`
         ),
     };
     console.debug(
@@ -498,7 +521,11 @@ function getAttemptCopy(step, isAnswered = false) {
       closingText: sanitize("Merci et à bientôt !"),
       smsBody: (ctx) =>
         sanitize(
-          `Dernier suivi ${ctx?.lead?.firstName || ''} — veux-tu toujours de l'aide pour trouver un emploi ? Réponds "Oui" et je te rappelle, ou complète ici: ${ctx.bookingUrl}`
+          `Dernier suivi ${
+            ctx?.lead?.firstName || ""
+          } — veux-tu toujours de l'aide pour trouver un emploi ? Réponds "Oui" et je te rappelle, ou complète ici: ${
+            ctx.bookingUrl
+          }`
         ),
     };
     console.debug(
@@ -520,7 +547,9 @@ function getAttemptCopy(step, isAnswered = false) {
       ),
       smsBody: (ctx) =>
         sanitize(
-          `Petit rappel ${ctx?.lead?.firstName || ''} : tu peux compléter ton dossier ici: ${ctx.bookingUrl}`
+          `Petit rappel ${
+            ctx?.lead?.firstName || ""
+          } : tu peux compléter ton dossier ici: ${ctx.bookingUrl}`
         ),
     };
     console.debug(
@@ -543,7 +572,11 @@ function getAttemptCopy(step, isAnswered = false) {
       closingText: sanitize("Merci et à bientôt !"),
       smsBody: (ctx) =>
         sanitize(
-          `Dernier suivi ${ctx?.lead?.firstName || ''} — toujours à la recherche d'un emploi ? Réponds "Oui" et je te rappelle, ou complète ici: ${ctx.bookingUrl}`
+          `Dernier suivi ${
+            ctx?.lead?.firstName || ""
+          } — toujours à la recherche d'un emploi ? Réponds "Oui" et je te rappelle, ou complète ici: ${
+            ctx.bookingUrl
+          }`
         ),
     };
     console.debug(
@@ -565,7 +598,15 @@ function getAttemptCopy(step, isAnswered = false) {
 // -----------------------------------------------------------------------------
 // Sender
 // -----------------------------------------------------------------------------
-async function sendEmailAndSMS({ lead, subject, context, smsBody, skipEmail, toEmailOverride = null, toPhoneOverride = null }) {
+async function sendEmailAndSMS({
+  lead,
+  subject,
+  context,
+  smsBody,
+  skipEmail,
+  toEmailOverride = null,
+  toPhoneOverride = null,
+}) {
   console.debug(
     `[DEBUG] sendEmailAndSMS: Starting for leadId ${lead?.id}, subject: ${subject}, skipEmail: ${skipEmail}`
   );
@@ -1331,7 +1372,10 @@ export async function runScheduledNotificationJob({
   if (!lead) return;
 
   if (step === "ANSWERED_IMMEDIATE") {
-    await sendAnsweredImmediateEmail(lead, { ...vars, emailFromMeta: emailOverride || vars?.emailFromMeta || null });
+    await sendAnsweredImmediateEmail(lead, {
+      ...vars,
+      emailFromMeta: emailOverride || vars?.emailFromMeta || null,
+    });
   } else if (["ANSWERED_24H", "ANSWERED_48H"].includes(step)) {
     await processScheduledNotification(lead, step, attemptNumber);
   } else if (["ANSWERED_15M", "ANSWERED_30M"].includes(step)) {
