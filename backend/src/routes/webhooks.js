@@ -563,6 +563,7 @@ r.post("/elevenlabs", async (req, res) => {
               emailFromMeta,
             });
             await sendAnsweredImmediateEmail(lead, {
+              emailFromMeta,
               translated_job_types: d?.analysis?.translated_job_types || null,
               job_type: dc?.job_type ?? null,
               available_to_start: d?.analysis?.available_to_start || null,
@@ -1189,6 +1190,7 @@ r.post("/elevenlabs", async (req, res) => {
             emailFromMeta,
           });
           await sendAnsweredImmediateEmail(lead, {
+            emailFromMeta,
             translated_job_types: getDC('translated_job_types'),
             job_type: getDC('job_type'),
             available_to_start: getDC('available_to_start'),

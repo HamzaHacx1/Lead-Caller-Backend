@@ -220,14 +220,18 @@ async function enqueueNotificationEvent({
 // -----------------------------------------------------------------------------
 // Small validators
 // -----------------------------------------------------------------------------
+function isValidEmail(email) {
+  const e = (email ?? "").trim();
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i;
+  return Boolean(e) && emailRegex.test(e) && !e.includes(";");
+}
+
 function hasEmail(lead) {
   console.debug(
     `[DEBUG] hasEmail: Checking email for lead: ${JSON.stringify(lead)}`
   );
   const email = (lead?.email ?? "").trim();
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i;
-  const isValid =
-    Boolean(email) && emailRegex.test(email) && !email.includes(";");
+  const isValid = isValidEmail(email);
   console.debug(`[DEBUG] hasEmail: Email: ${email}, isValid: ${isValid}`);
   return isValid;
 }
@@ -561,7 +565,7 @@ function getAttemptCopy(step, isAnswered = false) {
 // -----------------------------------------------------------------------------
 // Sender
 // -----------------------------------------------------------------------------
-async function sendEmailAndSMS({ lead, subject, context, smsBody, skipEmail }) {
+async function sendEmailAndSMS({ lead, subject, context, smsBody, skipEmail, toEmailOverride = null, toPhoneOverride = null }) {
   console.debug(
     `[DEBUG] sendEmailAndSMS: Starting for leadId ${lead?.id}, subject: ${subject}, skipEmail: ${skipEmail}`
   );
@@ -574,8 +578,12 @@ async function sendEmailAndSMS({ lead, subject, context, smsBody, skipEmail }) {
   };
   console.debug(`[DEBUG] sendEmailAndSMS: Context: ${JSON.stringify(baseCtx)}`);
 
+  let emailSent = false;
+  let smsSent = false;
+
   // Email
-  if (!skipEmail && hasEmail(lead)) {
+  const toEmail = (toEmailOverride ?? lead?.email ?? "").trim();
+  if (!skipEmail && isValidEmail(toEmail)) {
     try {
       console.debug(
         `[DEBUG] sendEmailAndSMS: Rendering email template for leadId ${lead.id}`
@@ -586,14 +594,15 @@ async function sendEmailAndSMS({ lead, subject, context, smsBody, skipEmail }) {
       );
       console.log("[NOTIFY:email] sending", {
         leadId: lead.id,
-        to: String(lead.email).trim(),
+        to: toEmail,
         subject,
       });
       const info = await sendEmail({
-        to: String(lead.email).trim(),
+        to: toEmail,
         subject,
         html,
       });
+      emailSent = true;
       console.log("[NOTIFY:email] sent", {
         leadId: lead.id,
         accepted: info?.accepted,
@@ -608,19 +617,20 @@ async function sendEmailAndSMS({ lead, subject, context, smsBody, skipEmail }) {
   } else {
     console.log("[NOTIFY:email] skipped", {
       leadId: lead?.id,
-      reason: skipEmail ? "forced skip" : "no email",
+      reason: skipEmail ? "forced skip" : "no valid email",
     });
     console.debug(
       `[DEBUG] sendEmailAndSMS: Email skipped, reason: ${
-        skipEmail ? "forced skip" : "no email"
+        skipEmail ? "forced skip" : "no valid email"
       }`
     );
   }
 
   // SMS
-  if (hasPhone(lead) && smsBody) {
+  const toPhone = (toPhoneOverride ?? lead?.phone ?? "").trim();
+  if (toPhone && smsBody) {
     try {
-      const to = String(lead.phone).trim();
+      const to = String(toPhone).trim();
       console.debug(`[DEBUG] sendEmailAndSMS: Preparing SMS for ${to}`);
       const body =
         typeof smsBody === "function" ? smsBody(baseCtx) : String(smsBody);
@@ -628,6 +638,7 @@ async function sendEmailAndSMS({ lead, subject, context, smsBody, skipEmail }) {
       if (body) {
         console.log("[NOTIFY:sms] sending", { leadId: lead.id, to });
         await sendSMS({ to, body });
+        smsSent = true;
         console.log("[NOTIFY:sms] sent", { leadId: lead.id });
       }
     } catch (e) {
@@ -635,6 +646,8 @@ async function sendEmailAndSMS({ lead, subject, context, smsBody, skipEmail }) {
       console.debug(`[DEBUG] sendEmailAndSMS: SMS send failed: ${e.message}`);
     }
   }
+
+  return { emailSent, smsSent };
 }
 
 // -----------------------------------------------------------------------------
@@ -1178,6 +1191,7 @@ export async function sendAnsweredImmediateEmail(lead, vars = {}) {
   });
   const subject =
     "Salut 👋 Suite à ton appel avec notre agent, nous avons créé ton profil temporaire.";
+  const emailFromMeta = vars?.emailFromMeta || vars?.email_from_meta || null;
   const firstNonEmpty = (...vals) => {
     for (const v of vals) {
       if (v != null && String(v).trim() !== "") return String(v);
@@ -1241,14 +1255,30 @@ export async function sendAnsweredImmediateEmail(lead, vars = {}) {
     "Par la suite, ton compte sera créé !",
   ].join("\n");
 
-  await sendEmailAndSMS({
+  const sendRes = await sendEmailAndSMS({
     lead,
     subject,
     context: ctx,
     smsBody,
     skipEmail: false,
+    toEmailOverride: isValidEmail(emailFromMeta) ? emailFromMeta : null,
   });
   console.log("[NOTIFY] answered immediate: dispatched", { leadId: lead?.id });
+
+  // Fallback: if SMS didn't go out for any reason, enqueue an immediate SMS-only job
+  try {
+    if (!sendRes?.smsSent) {
+      const ok = await ensureOnce(lead.id, "ANSWERED_1_SMS_ONLY_SCHEDULED");
+      if (ok) {
+        await enqueueNotificationEvent({
+          leadId: lead.id,
+          step: "ANSWERED_1_SMS_ONLY",
+          scheduledAt: new Date(Date.now() + 15 * 1000),
+          attemptNumber: 1,
+        });
+      }
+    }
+  } catch (_) {}
 }
 // -----------------------------------------------------------------------------
 // BullMQ worker entrypoint: run a single scheduled step (idempotent)
