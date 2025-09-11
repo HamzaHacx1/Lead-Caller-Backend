@@ -1062,6 +1062,8 @@ export async function processScheduledNotifications(limit = 500) {
       scheduledAt: { lte: now },
       step: {
         in: [
+          // Immediate answer step
+          "ANSWERED_IMMEDIATE",
           // ANSWERED series (kept)
           "ANSWERED_24H",
           "ANSWERED_48H",
@@ -1280,6 +1282,32 @@ export async function sendAnsweredImmediateEmail(lead, vars = {}) {
     }
   } catch (_) {}
 }
+
+// Queue an immediate-after-call job so the worker reliably delivers the first SMS+email.
+export async function scheduleAnsweredImmediate(lead, vars = {}) {
+  if (!lead?.id) return;
+  try {
+    const ok = await ensureOnce(lead.id, "ANSWERED_IMMEDIATE_SCHEDULED");
+    if (!ok) return;
+  } catch (_) {}
+
+  const emailOverride = vars?.emailFromMeta || vars?.email_from_meta || null;
+  const queue = getNotificationQueue();
+  const jobId = `lead:${lead.id}:step:ANSWERED_IMMEDIATE`;
+  await queue.add(
+    "notify-step",
+    {
+      leadId: lead.id,
+      step: "ANSWERED_IMMEDIATE",
+      attemptNumber: 1,
+      eventId: null,
+      emailOverride,
+      phoneOverride: null,
+      vars,
+    },
+    { delay: 0, jobId }
+  );
+}
 // -----------------------------------------------------------------------------
 // BullMQ worker entrypoint: run a single scheduled step (idempotent)
 // -----------------------------------------------------------------------------
@@ -1288,17 +1316,23 @@ export async function runScheduledNotificationJob({
   step,
   attemptNumber = 1,
   eventId = null,
+  emailOverride = null,
+  phoneOverride = null,
+  vars = {},
 }) {
   console.log("[NOTIFY] worker: runScheduledNotificationJob", {
     leadId,
     step,
     attemptNumber,
     eventId,
+    emailOverride: emailOverride ? "provided" : null,
   });
   const lead = await prisma.lead.findUnique({ where: { id: leadId } });
   if (!lead) return;
 
-  if (["ANSWERED_24H", "ANSWERED_48H"].includes(step)) {
+  if (step === "ANSWERED_IMMEDIATE") {
+    await sendAnsweredImmediateEmail(lead, { ...vars, emailFromMeta: emailOverride || vars?.emailFromMeta || null });
+  } else if (["ANSWERED_24H", "ANSWERED_48H"].includes(step)) {
     await processScheduledNotification(lead, step, attemptNumber);
   } else if (["ANSWERED_15M", "ANSWERED_30M"].includes(step)) {
     await processQuickScheduledNotification(lead, step, attemptNumber);

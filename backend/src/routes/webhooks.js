@@ -7,7 +7,7 @@ import { nextInsideWindowUnix, START, END, pickTz } from "../lib/schedule.js";
 import {
   handleQuickAttemptNotifications,
   processScheduledNotifications,
-  sendAnsweredImmediateEmail,
+  scheduleAnsweredImmediate,
 } from "../lib/notifications.js";
 import { nowIn, QUEBEC_TZ } from "../lib/quebecTime.js";
 import prisma from "../lib/prisma.js";
@@ -552,32 +552,6 @@ r.post("/elevenlabs", async (req, res) => {
             snippet,
           });
         }
-
-        // Immediate after-call email + SMS (uses structured variables when available)
-        try {
-          if (outcome === 'ANSWERED') {
-            console.log('[NOTIFY] answered immediate: invoking (structured)', {
-              leadId: lead.id,
-              email: lead.email,
-              phone: lead.phone,
-              emailFromMeta,
-            });
-            await sendAnsweredImmediateEmail(lead, {
-              emailFromMeta,
-              translated_job_types: d?.analysis?.translated_job_types || null,
-              job_type: dc?.job_type ?? null,
-              available_to_start: d?.analysis?.available_to_start || null,
-              availability: dc?.availability ?? null,
-              salary_expectation: d?.analysis?.salary_expectation || null,
-              salary_expectations: dc?.salary_expectations ?? null,
-              translated_user_categories: d?.analysis?.translated_user_categories || null,
-              job_field: dc?.job_field ?? null,
-              completion_link: process.env.BOOKING_URL || null,
-            });
-          }
-        } catch (e) {
-          console.warn('[NOTIFY] answered immediate send failed', e?.message);
-        }
       } catch (e) {
         console.debug(
           `[DEBUG] POST /elevenlabs: transcript logging failed: ${e?.message}`
@@ -825,6 +799,32 @@ r.post("/elevenlabs", async (req, res) => {
       console.debug(`[DEBUG] POST /elevenlabs: Lead updated`);
 
       try {
+        // Immediate after-call email + SMS handled by notifications worker
+        if (outcome === 'ANSWERED') {
+          try {
+            console.log('[NOTIFY] answered immediate: enqueueing (structured)', {
+              leadId: lead.id,
+              email: lead.email,
+              phone: lead.phone,
+              emailFromMeta,
+            });
+            await scheduleAnsweredImmediate(lead, {
+              emailFromMeta,
+              translated_job_types: d?.analysis?.translated_job_types || null,
+              job_type: dc?.job_type ?? null,
+              available_to_start: d?.analysis?.available_to_start || null,
+              availability: dc?.availability ?? null,
+              salary_expectation: d?.analysis?.salary_expectation || null,
+              salary_expectations: dc?.salary_expectations ?? null,
+              translated_user_categories: d?.analysis?.translated_user_categories || null,
+              job_field: dc?.job_field ?? null,
+              completion_link: process.env.BOOKING_URL || null,
+            });
+          } catch (e) {
+            console.warn('[NOTIFY] answered immediate enqueue failed', e?.message);
+          }
+        }
+
         if (["ANSWERED", "NO_ANSWER", "FAILED"].includes(outcome)) {
           console.debug(
             `[DEBUG] POST /elevenlabs: Triggering notifications for outcome ${outcome}`
@@ -1179,17 +1179,17 @@ r.post("/elevenlabs", async (req, res) => {
           `[DEBUG] POST /elevenlabs: Notifications triggered (flat)`
         );
       }
-      // Immediate after-call email + SMS (flat payloads)
+      // Immediate after-call email + SMS (flat payloads) handled by notifications worker
       if (outcome === 'ANSWERED') {
         try {
           const completion_link = process.env.BOOKING_URL || null;
-          console.log('[NOTIFY] answered immediate: invoking (flat)', {
+          console.log('[NOTIFY] answered immediate: enqueueing (flat)', {
             leadId: lead.id,
             email: lead.email,
             phone: lead.phone,
             emailFromMeta,
           });
-          await sendAnsweredImmediateEmail(lead, {
+          await scheduleAnsweredImmediate(lead, {
             emailFromMeta,
             translated_job_types: getDC('translated_job_types'),
             job_type: getDC('job_type'),
@@ -1202,7 +1202,7 @@ r.post("/elevenlabs", async (req, res) => {
             completion_link,
           });
         } catch (e) {
-          console.warn('[NOTIFY] answered immediate send failed (flat)', e?.message);
+          console.warn('[NOTIFY] answered immediate enqueue failed (flat)', e?.message);
         }
       }
     } catch (e) {

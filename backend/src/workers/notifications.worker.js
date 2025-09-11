@@ -7,14 +7,15 @@ export function startNotificationsWorker() {
   const worker = startWorker(
     "notifications",
     async (job) => {
-      const { leadId, step, attemptNumber = 1, eventId = null } = job.data || {};
+      const data = job.data || {};
+      const { leadId, step } = data;
       if (!leadId || !step) {
         throw new Error("Invalid job data: missing leadId or step");
       }
-      await runScheduledNotificationJob({ leadId, step, attemptNumber, eventId });
+      // Pass the entire job payload so new fields (overrides/vars) are supported
+      await runScheduledNotificationJob(data);
     },
     { concurrency: 10 }
   );
   return worker;
 }
-
