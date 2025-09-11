@@ -92,8 +92,10 @@ export async function sendPreCallNudge(lead, attempt) {
     title: "Tu veux un job ?",
     subtitle: "Il te reste une seule étape 🚀",
     bodyText:
+      "<p>Salut 👋</p>" +
       "<p>Tu viens tout juste de remplir notre formulaire pour trouver un emploi rapidement 🙌</p>" +
-      "<p><strong>Bonne nouvelle : t’es à 1 clic de finaliser ton inscription sur notre plateforme.</strong></p>",
+      "<p><strong>Bonne nouvelle : t’es à 1 clic de finaliser ton inscription sur notre plateforme.</strong></p>" +
+      "<p>Tout est fait pour aller vite. Pas besoin de tout réécrire — on s’occupe de tout 💪</p>",
     cta_text: "➡️ INSCRIPTION ICI",
     cta_link: BOOKING_URL,
     closingText: "À bientôt !",

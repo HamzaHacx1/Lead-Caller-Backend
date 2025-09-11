@@ -8,6 +8,7 @@ import { START, END, pickTz } from "../lib/schedule.js";
 import { QUEBEC_TZ } from "../lib/quebecTime.js";
 import prisma from "./prisma.js";
 
+
 const { SUPPORT_NUMBER, APP_NAME = "EmploiRapide" } = process.env;
 const FAST_NOTIFY = (process.env.FAST_NOTIFY ?? "1") === "1"; // send immediately for testing
 // Configurable delays (ms)
@@ -276,7 +277,7 @@ function getAttemptCopy(step, isAnswered = false) {
           <p>👉 Compléter mon dossier (${BOOKING_URL})</p>
           <p>Pas de stress. Juste une p’tite étape de plus, et tu pourras recevoir des offres.</p>
           <p>On garde ta place au chaud 🔥</p>
-          <p><strong>Si tu as déjà rempli ton profil, ignore ce message 😄</strong></p>`),
+          <p><strong>Si tu as deja remplis ton profil ignore ce message 😄</strong></p>`),
         cta_link: BOOKING_URL,
         closingText: sanitize("— L’équipe Emploi Rapide"),
         smsBody: () =>
@@ -320,7 +321,7 @@ function getAttemptCopy(step, isAnswered = false) {
       return copy;
     }
     if (step === "ANSWERED_15M") {
-      // Reuse the same copy as the "second aftercall" for test flow (+5 minutes)
+      // Test flow 5 minutes after call — same copy as 24h
       const copy = {
         subject: sanitize("T’as ton CV à portée de main ?"),
         title: sanitize("On t’attend encore"),
@@ -337,7 +338,7 @@ function getAttemptCopy(step, isAnswered = false) {
           <p>👉 Compléter mon dossier (${BOOKING_URL})</p>
           <p>Pas de stress. Juste une p’tite étape de plus, et tu pourras recevoir des offres.</p>
           <p>On garde ta place au chaud 🔥</p>
-          <p><strong>Si tu as déjà rempli ton profil, ignore ce message 😄</strong></p>`),
+          <p><strong>Si tu as deja remplis ton profil ignore ce message 😄</strong></p>`),
         cta_link: BOOKING_URL,
         closingText: sanitize("— L’équipe Emploi Rapide"),
         smsBody: () =>
@@ -353,7 +354,7 @@ function getAttemptCopy(step, isAnswered = false) {
       return copy;
     }
     if (step === "ANSWERED_30M") {
-      // Third aftercall (test flow +10m) mirrors the 48H copy
+      // Test flow 10 minutes after call — same copy as 48h
       const copy = {
         subject: sanitize(
           "On peut pas t’aider tant que ton profil est en pause"
@@ -397,9 +398,9 @@ function getAttemptCopy(step, isAnswered = false) {
         <p>J’ai essayé de t’appeler aujourd’hui pour avancer dans ta recherche d’emploi, mais je n’ai pas réussi à te joindre.</p>
         <p>Pas de souci — tu peux compléter ton inscription en ligne ici (ça prend 3 minutes) :</p>`),
       closingText: sanitize("À bientôt,"),
-      smsBody: () =>
+      smsBody: (ctx) =>
         sanitize(
-          `Simon d’${APP_NAME} — J’ai tenté de t’appeler pour ta recherche d’emploi. Rappelle moi !`
+          `Salut ${ctx?.lead?.firstName || ''}, c'est Simon d'${APP_NAME}. J'ai tenté de t'appeler. Tu peux compléter ton inscription ici: ${ctx.bookingUrl}`
         ),
     };
     return copy;
@@ -417,9 +418,9 @@ function getAttemptCopy(step, isAnswered = false) {
       closingText: sanitize(
         "On pourra ainsi te proposer des postes plus rapidement. À très vite."
       ),
-      smsBody: () =>
+      smsBody: (ctx) =>
         sanitize(
-          `Simon d’${APP_NAME} ici — je n’ai toujours pas eu ton appel. Peux-tu me rappeler ? 📞`
+          `Rebonjour ${ctx?.lead?.firstName || ''}. Pour avancer plus vite, complète ton dossier ici: ${ctx.bookingUrl}`
         ),
     };
     return copy;
@@ -433,7 +434,10 @@ function getAttemptCopy(step, isAnswered = false) {
       cta_text: sanitize(""),
       bodyText: sanitize(``),
       closingText: sanitize(""),
-      smsBody: () => sanitize(`As-tu toujours besoin d’un emploi ?`),
+      smsBody: (ctx) =>
+        sanitize(
+          `Dernier suivi ${ctx?.lead?.firstName || ''} — veux-tu toujours de l'aide pour trouver un emploi ? Réponds "Oui" et je te rappelle, ou complète ici: ${ctx.bookingUrl}`
+        ),
     };
     return copy;
   }
@@ -447,9 +451,9 @@ function getAttemptCopy(step, isAnswered = false) {
       <p><strong>J’ai essayé de t’appeler aujourd’hui</strong> pour avancer dans ta recherche d’emploi, mais je n’ai pas réussi à te joindre.</p>
       <p>Pas de souci — tu peux compléter ton inscription en ligne (3 minutes) :</p>`),
     closingText: sanitize("À bientôt !"),
-    smsBody: () =>
+    smsBody: (ctx) =>
       sanitize(
-        `Simon d’${APP_NAME} — J’ai tenté de t’appeler pour ta recherche d’emploi. Rappelle moi !`
+        `Salut ${ctx?.lead?.firstName || ''}, c'est Simon d'${APP_NAME}. J'ai tenté de t'appeler. Tu peux compléter ton inscription ici: ${ctx.bookingUrl}`
       ),
   };
 
@@ -465,9 +469,9 @@ function getAttemptCopy(step, isAnswered = false) {
       closingText: sanitize(
         "On pourra ainsi te proposer des postes plus rapidement. À très vite !"
       ),
-      smsBody: () =>
+      smsBody: (ctx) =>
         sanitize(
-          `Simon d’${APP_NAME} ici — je n’ai toujours pas eu ton appel. Peux-tu me rappeler ? 📞`
+          `Rebonjour ${ctx?.lead?.firstName || ''}. Pour avancer plus vite, complète ton dossier ici: ${ctx.bookingUrl}`
         ),
     };
     console.debug(
@@ -488,7 +492,10 @@ function getAttemptCopy(step, isAnswered = false) {
         <p>C’est la 3<sup>e</sup> fois qu’on essaye de t’appeler sans succès.</p>
         <p>Si tu veux toujours un job rapidement, il te suffit de compléter ton profil :</p>`),
       closingText: sanitize("Merci et à bientôt !"),
-      smsBody: () => sanitize(`As-tu toujours besoin d’un emploi ?`),
+      smsBody: (ctx) =>
+        sanitize(
+          `Dernier suivi ${ctx?.lead?.firstName || ''} — veux-tu toujours de l'aide pour trouver un emploi ? Réponds "Oui" et je te rappelle, ou complète ici: ${ctx.bookingUrl}`
+        ),
     };
     console.debug(
       `[DEBUG] getAttemptCopy: Returning copy for AFTER_3_NO_ANSWER: ${JSON.stringify(
@@ -507,9 +514,9 @@ function getAttemptCopy(step, isAnswered = false) {
       closingText: sanitize(
         "On peut te proposer des postes rapidement. À tout de suite !"
       ),
-      smsBody: () =>
+      smsBody: (ctx) =>
         sanitize(
-          `Simon d’${APP_NAME} — Pas eu ton appel. Rappelle-moi vite ! 📞`
+          `Petit rappel ${ctx?.lead?.firstName || ''} : tu peux compléter ton dossier ici: ${ctx.bookingUrl}`
         ),
     };
     console.debug(
@@ -530,7 +537,10 @@ function getAttemptCopy(step, isAnswered = false) {
         <p>3<sup>e</sup> tentative d’appel sans réponse.</p>
         <p>Complète ton profil pour avancer :</p>`),
       closingText: sanitize("Merci et à bientôt !"),
-      smsBody: () => sanitize(`Toujours à la recherche d’un emploi ?`),
+      smsBody: (ctx) =>
+        sanitize(
+          `Dernier suivi ${ctx?.lead?.firstName || ''} — toujours à la recherche d'un emploi ? Réponds "Oui" et je te rappelle, ou complète ici: ${ctx.bookingUrl}`
+        ),
     };
     console.debug(
       `[DEBUG] getAttemptCopy: Returning copy for AFTER_3_NO_ANSWER_QUICK: ${JSON.stringify(
@@ -1266,8 +1276,11 @@ export async function runScheduledNotificationJob({
     // SMS-only follow-up after first answered call
     const copy = {
       subject: "",
-      smsBody:
-        "Salut dY`<\nSuite A� ton appel avec notre agent, nous avons crAcAc ton profil temporaire. Pour complActer ton dossier, il ne te reste qu�?TA� joindre tes derniers documents sur notre lien sAccurisAc ! Vas dans tes courriels tu le retrouveras lA�.\nPar la suite, ton compte sera crAcAc !",
+      smsBody: [
+        "Salut 👋",
+        "Suite à ton appel avec notre agent, nous avons créé ton profil temporaire. Pour compléter ton dossier, il ne te reste qu’à joindre tes derniers documents sur notre lien sécurisé ! Vas dans tes courriels tu le retrouveras là.",
+        "Par la suite, ton compte sera créé !",
+      ].join("\n"),
     };
     await sendEmailAndSMS({
       lead,
