@@ -120,6 +120,71 @@ function rollForwardToWindowDate(date, tz, startHour = START) {
 }
 
 // -----------------------------------------------------------------------------
+// Cancellation helpers when outcome changes
+// -----------------------------------------------------------------------------
+function stepsForType(type) {
+  if (type === "ANSWERED") {
+    return [
+      "ANSWERED_IMMEDIATE",
+      "ANSWERED_24H",
+      "ANSWERED_48H",
+      "ANSWERED_15M",
+      "ANSWERED_30M",
+      "ANSWERED_1_SMS_ONLY",
+    ];
+  }
+  if (type === "NO_ANSWER") {
+    return [
+      "AFTER_1_NO_ANSWER",
+      "AFTER_2_NO_ANSWER",
+      "AFTER_3_NO_ANSWER",
+      "AFTER_1_NO_ANSWER_QUICK",
+      "AFTER_2_NO_ANSWER_QUICK",
+      "AFTER_3_NO_ANSWER_QUICK",
+    ];
+  }
+  return [];
+}
+
+async function cancelPendingEventsForLead(leadId, type) {
+  try {
+    const stepList = stepsForType(type);
+    if (!leadId || !stepList.length) return;
+    const now = new Date();
+    const del = await prisma.notificationEvent.deleteMany({
+      where: {
+        leadId,
+        step: { in: stepList },
+        scheduledAt: { gte: now },
+      },
+    });
+    if (del?.count) {
+      console.log("[NOTIFY] canceled pending events", {
+        leadId,
+        type,
+        count: del.count,
+      });
+    }
+  } catch (e) {
+    console.warn("[NOTIFY] cancelPendingEventsForLead failed", e?.message);
+  }
+}
+
+function stepType(step) {
+  if (!step || typeof step !== "string") return null;
+  if (
+    step.startsWith("AFTER_1_NO_ANSWER") ||
+    step.startsWith("AFTER_2_NO_ANSWER") ||
+    step.startsWith("AFTER_3_NO_ANSWER")
+  ) {
+    return "NO_ANSWER";
+  }
+  if (step.startsWith("ANSWERED_")) return "ANSWERED";
+  if (step === "ANSWERED_IMMEDIATE") return "ANSWERED";
+  return null;
+}
+
+// -----------------------------------------------------------------------------
 // Idempotent step marker (prevents double-scheduling/sending)
 // -----------------------------------------------------------------------------
 async function ensureOnce(leadId, step) {
@@ -882,6 +947,8 @@ export async function handleAttemptNotifications({
   }
 
   if (outcome === "ANSWERED") {
+    // Cancel any pending NO_ANSWER follow-ups now that the lead answered
+    await cancelPendingEventsForLead(lead.id, "NO_ANSWER");
     console.debug(
       `[DEBUG] handleAttemptNotifications: Outcome is ANSWERED, scheduling delayed notifications`
     );
@@ -895,6 +962,10 @@ export async function handleAttemptNotifications({
 
   // TESTING: For testing, send NO_ANSWER notifications immediately or schedule at 2-min intervals
   if (attemptNumber >= 1 && attemptNumber <= 3) {
+    // Cancel any pending ANSWERED follow-ups since we are in a no-answer/failed path
+    if (outcome === "NO_ANSWER" || outcome === "FAILED") {
+      await cancelPendingEventsForLead(lead.id, "ANSWERED");
+    }
     const step = `AFTER_${attemptNumber}_NO_ANSWER`;
     console.debug(
       `[DEBUG] handleAttemptNotifications: Processing NO_ANSWER step ${step}`
@@ -994,6 +1065,8 @@ export async function handleQuickAttemptNotifications({
   }
 
   if (outcome === "ANSWERED") {
+    // Cancel any pending NO_ANSWER follow-ups now that the lead answered
+    await cancelPendingEventsForLead(lead.id, "NO_ANSWER");
     const tz = pickTz(lead.timezone || QUEBEC_TZ);
     const now = moment().tz(tz);
     const isTest = isTestLead(lead);
@@ -1046,6 +1119,8 @@ export async function handleQuickAttemptNotifications({
     attemptNumber >= 1 &&
     attemptNumber <= 3
   ) {
+    // Cancel any pending ANSWERED follow-ups since we are in a no-answer/failed path
+    await cancelPendingEventsForLead(lead.id, "ANSWERED");
     const step = `AFTER_${attemptNumber}_NO_ANSWER_QUICK`;
     console.debug(
       `[DEBUG] handleQuickAttemptNotifications: Processing NO_ANSWER_QUICK step ${step}`
@@ -1179,6 +1254,35 @@ export async function processScheduledNotifications(limit = 500) {
         console.debug(
           `[DEBUG] processScheduledNotifications: Failed to acquire lock for id ${n.id}, skipping`
         );
+        continue;
+      }
+
+      // Refresh lead to get most recent status/outcome
+      let freshLead = null;
+      try {
+        freshLead = await prisma.lead.findUnique({ where: { id: n.leadId } });
+      } catch (_) {}
+      const sType = stepType(n.step);
+      const curStatus = freshLead?.status || n.lead?.status || null;
+      // Skip if this step no longer makes sense with the current outcome
+      if (sType === "NO_ANSWER" && curStatus === "ANSWERED") {
+        console.log("[NOTIFY] skip outdated no_answer step", {
+          eventId: n.id,
+          leadId: n.leadId,
+          step: n.step,
+          status: curStatus,
+        });
+        await prisma.notificationEvent.delete({ where: { id: n.id } });
+        continue;
+      }
+      if (sType === "ANSWERED" && curStatus && curStatus !== "ANSWERED") {
+        console.log("[NOTIFY] skip outdated answered step", {
+          eventId: n.id,
+          leadId: n.leadId,
+          step: n.step,
+          status: curStatus,
+        });
+        await prisma.notificationEvent.delete({ where: { id: n.id } });
         continue;
       }
 
@@ -1399,6 +1503,34 @@ export async function runScheduledNotificationJob({
   });
   const lead = await prisma.lead.findUnique({ where: { id: leadId } });
   if (!lead) return;
+
+  // Skip if this step no longer matches the current lead status
+  try {
+    const sType = stepType(step);
+    const curStatus = lead?.status || null;
+    if (sType === "NO_ANSWER" && curStatus === "ANSWERED") {
+      console.log("[NOTIFY] worker: skipping outdated no_answer step", {
+        leadId,
+        step,
+        status: curStatus,
+      });
+      if (eventId) {
+        try { await prisma.notificationEvent.delete({ where: { id: eventId } }); } catch (_) {}
+      }
+      return;
+    }
+    if (sType === "ANSWERED" && curStatus && curStatus !== "ANSWERED") {
+      console.log("[NOTIFY] worker: skipping outdated answered step", {
+        leadId,
+        step,
+        status: curStatus,
+      });
+      if (eventId) {
+        try { await prisma.notificationEvent.delete({ where: { id: eventId } }); } catch (_) {}
+      }
+      return;
+    }
+  } catch (_) {}
 
   if (step === "ANSWERED_IMMEDIATE") {
     await sendAnsweredImmediateEmail(lead, {
