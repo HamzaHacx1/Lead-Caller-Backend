@@ -288,18 +288,22 @@ function getAttemptCopy(step, isAnswered = false) {
         title: sanitize("On t’attend encore"),
         cta_text: sanitize("👉 Compléter mon dossier"),
         bodyText: sanitize(`
-          <p>Salut 👋</p>
-          <p>On a vu que t’as commencé ton inscription…</p>
-          <p>Mais ton profil est encore bloqué à l’étape 1 😬</p>
-          <p>Il te reste à :</p>
-          <ul>
-            <li>✅ Ajouter ton CV</li>
-            <li>✅ Joindre un spécimen de chèque</li>
-          </ul>
-          <p>👉 Compléter mon dossier (${BOOKING_URL})</p>
-          <p>Pas de stress. Juste une p’tite étape de plus, et tu pourras recevoir des offres.</p>
-          <p>On garde ta place au chaud 🔥</p>
-          <p><strong>Si tu as deja remplis ton profil ignore ce message 😄</strong></p>`),
+          <div>
+            <p>Salut 👋</p>
+            <p>On a vu que t’as commencé ton inscription…</p>
+            <p>Mais ton profil est encore bloqué à l’étape 1 😬</p>
+            <p>Il te reste à :</p>
+            <ul>
+              <li>✅ Ajouter ton CV</li>
+              <li>✅ Joindre un spécimen de chèque</li>
+            </ul>
+            <p>👉 Compléter mon dossier
+              <a href="${BOOKING_URL}" target="_blank" rel="noopener noreferrer">${BOOKING_URL}</a>
+            </p>
+            <p>Pas de stress. Juste une p’tite étape de plus, et tu pourras recevoir des offres.</p>
+            <p>On garde ta place au chaud 🔥</p>
+            <p><strong>Si tu as déjà rempli ton profil, ignore ce message 😄</strong></p>
+          </div>`),
         cta_link: BOOKING_URL,
         closingText: sanitize("— L’équipe Emploi Rapide"),
         smsBody: () =>
@@ -323,14 +327,17 @@ function getAttemptCopy(step, isAnswered = false) {
         cta_text: sanitize("👉 Compléter mon dossier"),
         cta_link: BOOKING_URL,
         bodyText: sanitize(`
-         <p>Salut !!<br></p>
-  <p>Ton inscription est bien commencée… mais sans CV ni spécimen de chèque, on ne peut pas avancer.<br>
-     C’est comme vouloir passer une entrevue sans se présenter 😅<br></p>
-  <p>👉 Compléter mon dossier (${BOOKING_URL})<br></p>
-  <p>Sinon, ton compte va rester en veille.<br>
-     Tu pourras toujours revenir plus tard, mais tu vas manquer des opportunités maintenant.<br></p>
-  <p>On est prêts quand toi tu l’es 💼</p>
-`),
+          <div>
+            <p>Salut !!</p>
+            <p>Ton inscription est bien commencée… mais sans CV ni spécimen de chèque, on ne peut pas avancer.</p>
+            <p>C’est comme vouloir passer une entrevue sans se présenter 😅</p>
+            <p>👉 Compléter mon dossier
+              <a href="${BOOKING_URL}" target="_blank" rel="noopener noreferrer">${BOOKING_URL}</a>
+            </p>
+            <p>Sinon, ton compte va rester en veille. Tu pourras toujours revenir plus tard, mais tu vas manquer des opportunités maintenant.</p>
+            <p>On est prêts quand toi tu l’es 💼</p>
+          </div>
+        `),
         closingText: sanitize("— Emploi Rapide"),
         smsBody: () =>
           sanitize(
@@ -351,20 +358,23 @@ function getAttemptCopy(step, isAnswered = false) {
         title: sanitize("On t’attend encore"),
         cta_text: sanitize("👉 Compléter mon dossier"),
         bodyText: sanitize(`
-          <p>Salut 👋<br></p>
-  <p>On a vu que t’as commencé ton inscription…<br></p>
-  <p>Mais ton profil est encore bloqué à l’étape 1 😬<br></p>
-  <p>Il te reste à :<br></p>
-  <ul>
-    <li>✅ Ajouter ton CV</li>
-    <li>✅ Joindre un spécimen de chèque</li>
-  </ul>
-  <p>👉 Compléter mon dossier (${BOOKING_URL})<br></p>
-  <p>Pas de stress.<br>
-     Juste une p’tite étape de plus, et tu pourras recevoir des offres.<br></p>
-  <p>On garde ta place au chaud 🔥<br></p>
-  <p><strong>Si tu as déjà rempli ton profil, ignore ce message 😄</strong></p>
-`),
+          <div>
+            <p>Salut 👋</p>
+            <p>On a vu que t’as commencé ton inscription…</p>
+            <p>Mais ton profil est encore bloqué à l’étape 1 😬</p>
+            <p>Il te reste à :</p>
+            <ul>
+              <li>✅ Ajouter ton CV</li>
+              <li>✅ Joindre un spécimen de chèque</li>
+            </ul>
+            <p>👉 Compléter mon dossier
+              <a href="${BOOKING_URL}" target="_blank" rel="noopener noreferrer">${BOOKING_URL}</a>
+            </p>
+            <p>Pas de stress. Juste une p’tite étape de plus, et tu pourras recevoir des offres.</p>
+            <p>On garde ta place au chaud 🔥</p>
+            <p><strong>Si tu as déjà rempli ton profil, ignore ce message 😄</strong></p>
+          </div>
+        `),
         cta_link: BOOKING_URL,
         closingText: sanitize("— L’équipe Emploi Rapide"),
         smsBody: () =>
