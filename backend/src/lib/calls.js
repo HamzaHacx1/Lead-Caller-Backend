@@ -1,7 +1,14 @@
 // lib/calls.js
 import moment from "moment-timezone";
 import prisma from "./prisma.js";
-import { START, END, pickTz, SLOT_SECS, ceilToSlotUnix } from "./schedule.js";
+import {
+  START,
+  END,
+  pickTz,
+  SLOT_SECS,
+  ceilToSlotUnix,
+  rollForwardToWindowUnix,
+} from "./schedule.js";
 import { QUEBEC_TZ } from "./quebecTime.js";
 import { getCallQueue } from "./redisQueue.js";
 
@@ -21,22 +28,16 @@ function slotKeyForUnix(unix) {
  */
 export function computeNextBusinessCallUnix(tz = QUEBEC_TZ, baseUnix = null) {
   const zone = pickTz(tz);
-  let m = baseUnix ? moment.unix(baseUnix).tz(zone) : moment().tz(zone);
+  const base = baseUnix ? moment.unix(baseUnix).tz(zone) : moment().tz(zone);
+  const hours = Math.max(1, Number(process.env.CALL_NEXT_DELAY_HOURS ?? 24));
 
-  // Set to next day @ START
-  m = m.add(1, "day").hour(START).minute(0).second(0).millisecond(0);
-  while (m.day() === 0 || m.day() === 6) m = m.add(1, "day");
-
-  // Ensure there's room for pre-nudge inside window
-  const latestCall = m.clone().hour(END).minute(0).second(0).millisecond(0);
-  latestCall.subtract(Math.ceil(PRECALL_NUDGE_MS / 1000), "seconds");
-  if (m.isSameOrAfter(latestCall)) {
-    // Jump to next day START if not enough room
-    m = latestCall.add(1, "day").hour(START).minute(0).second(0).millisecond(0);
-    while (m.day() === 0 || m.day() === 6) m = m.add(1, "day");
-  }
-
-  return ceilToSlotUnix(m.unix());
+  // 1) Start from "now + hours"
+  const target = base.clone().add(hours, "hours");
+  // 2) Align to slot boundary
+  const unix = ceilToSlotUnix(target.unix());
+  // 3) Clamp into business window and skip weekends
+  const clampedUnix = rollForwardToWindowUnix(unix, zone);
+  return clampedUnix;
 }
 
 /**
@@ -110,4 +111,3 @@ export async function enqueueCallForAttempt({ leadId, attemptId, attemptNumber, 
     { delay, jobId }
   );
 }
-
