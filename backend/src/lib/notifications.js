@@ -255,8 +255,27 @@ function getAttemptCopy(step, isAnswered = false) {
   const sanitize = (text) => {
     console.debug(`[DEBUG] getAttemptCopy: Sanitizing text: ${text}`);
     const sanitized = sanitizeHtml(text, {
-      allowedTags: [],
-      allowedAttributes: {},
+      // Allow basic formatting + links so line breaks render in emails
+      allowedTags: [
+        "p",
+        "br",
+        "strong",
+        "b",
+        "em",
+        "i",
+        "ul",
+        "ol",
+        "li",
+        "a",
+        "sup",
+        "sub",
+      ],
+      allowedAttributes: {
+        a: ["href", "target", "rel"],
+      },
+      allowedSchemes: ["http", "https", "mailto", "tel"],
+      allowedSchemesAppliedToAttributes: ["href"],
+      allowProtocolRelative: false,
     });
     console.debug(`[DEBUG] getAttemptCopy: Sanitized text: ${sanitized}`);
     return sanitized;
@@ -335,7 +354,7 @@ function getAttemptCopy(step, isAnswered = false) {
           <p>Salut 👋<br></p>
   <p>On a vu que t’as commencé ton inscription…<br></p>
   <p>Mais ton profil est encore bloqué à l’étape 1 😬<br></p>
-  <p>Il forwardedte reste à :<br></p>
+  <p>Il te reste à :<br></p>
   <ul>
     <li>✅ Ajouter ton CV</li>
     <li>✅ Joindre un spécimen de chèque</li>
