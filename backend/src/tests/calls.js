@@ -308,6 +308,7 @@ r.post("/call-now", async (req, res) => {
       timezone = QUEBEC_TZ,
       variables = {},
       metadata = {},
+      prod = false, // if true, do not mark lead as test
     } = req.body || {};
 
     if (!full_name || !phone) {
@@ -340,7 +341,7 @@ r.post("/call-now", async (req, res) => {
           email,
           timezone: tz,
           status: "SCHEDULED",
-          metadata: { ...metadata, test: true, call_now: true },
+          metadata: { ...metadata, ...(prod ? {} : { test: true }), call_now: true },
         },
       });
 
@@ -477,5 +478,4 @@ r.post("/flow/calls", async (req, res) => {
     return res.status(500).json({ ok: false, error: e.message || "server" });
   }
 });
-
 

@@ -165,6 +165,23 @@ async function cancelPendingEventsForLead(leadId, type) {
         count: del.count,
       });
     }
+
+    // Best-effort: also remove pending BullMQ jobs by id
+    try {
+      const queue = getNotificationQueue();
+      for (const step of stepList) {
+        const jobId = `lead:${leadId}:step:${step}`;
+        try {
+          const job = await queue.getJob(jobId);
+          if (job) {
+            await job.remove();
+            console.log("[NOTIFY] removed queued job", { leadId, step });
+          }
+        } catch (_) {}
+      }
+    } catch (e) {
+      console.warn("[NOTIFY] queue job removal failed", e?.message);
+    }
   } catch (e) {
     console.warn("[NOTIFY] cancelPendingEventsForLead failed", e?.message);
   }
@@ -1263,24 +1280,25 @@ export async function processScheduledNotifications(limit = 500) {
         freshLead = await prisma.lead.findUnique({ where: { id: n.leadId } });
       } catch (_) {}
       const sType = stepType(n.step);
-      const curStatus = freshLead?.status || n.lead?.status || null;
+      const curOutcome =
+        freshLead?.lastOutcome || freshLead?.status || n.lead?.lastOutcome || n.lead?.status || null;
       // Skip if this step no longer makes sense with the current outcome
-      if (sType === "NO_ANSWER" && curStatus === "ANSWERED") {
+      if (sType === "NO_ANSWER" && curOutcome === "ANSWERED") {
         console.log("[NOTIFY] skip outdated no_answer step", {
           eventId: n.id,
           leadId: n.leadId,
           step: n.step,
-          status: curStatus,
+          outcome: curOutcome,
         });
         await prisma.notificationEvent.delete({ where: { id: n.id } });
         continue;
       }
-      if (sType === "ANSWERED" && curStatus && curStatus !== "ANSWERED") {
+      if (sType === "ANSWERED" && curOutcome && curOutcome !== "ANSWERED") {
         console.log("[NOTIFY] skip outdated answered step", {
           eventId: n.id,
           leadId: n.leadId,
           step: n.step,
-          status: curStatus,
+          outcome: curOutcome,
         });
         await prisma.notificationEvent.delete({ where: { id: n.id } });
         continue;
@@ -1507,23 +1525,23 @@ export async function runScheduledNotificationJob({
   // Skip if this step no longer matches the current lead status
   try {
     const sType = stepType(step);
-    const curStatus = lead?.status || null;
-    if (sType === "NO_ANSWER" && curStatus === "ANSWERED") {
+    const curOutcome = lead?.lastOutcome || lead?.status || null;
+    if (sType === "NO_ANSWER" && curOutcome === "ANSWERED") {
       console.log("[NOTIFY] worker: skipping outdated no_answer step", {
         leadId,
         step,
-        status: curStatus,
+        outcome: curOutcome,
       });
       if (eventId) {
         try { await prisma.notificationEvent.delete({ where: { id: eventId } }); } catch (_) {}
       }
       return;
     }
-    if (sType === "ANSWERED" && curStatus && curStatus !== "ANSWERED") {
+    if (sType === "ANSWERED" && curOutcome && curOutcome !== "ANSWERED") {
       console.log("[NOTIFY] worker: skipping outdated answered step", {
         leadId,
         step,
-        status: curStatus,
+        outcome: curOutcome,
       });
       if (eventId) {
         try { await prisma.notificationEvent.delete({ where: { id: eventId } }); } catch (_) {}
