@@ -176,6 +176,33 @@ function mapOutcomeFromTranscription(data) {
     );
   }
 
+  // Short-call override: treat brief connects with no human speech as NO_ANSWER
+  const MIN_ANSWER_SECS = Math.max(1, Number(process.env.MIN_ANSWER_DURATION_SECS ?? 10));
+  const DECLINE_TERMS = [
+    "declined",
+    "rejected",
+    "cancelled",
+    "canceled",
+    "hangup",
+    "hung up",
+    "user busy",
+    "caller hung up",
+  ];
+  const isDeclineTerm = DECLINE_TERMS.some((p) => term.includes(p));
+  if ((callDur > 0 && callDur < MIN_ANSWER_SECS && !humanUtterance) || (isDeclineTerm && !humanUtterance)) {
+    console.debug(
+      `[DEBUG] mapOutcomeFromTranscription: Short/declined connect (dur=${callDur}s, human=${humanUtterance}) -> NO_ANSWER`
+    );
+    if (LOG_SIGNALS) {
+      console.log("[EL DECISION]", {
+        outcome: "NO_ANSWER",
+        reason: isDeclineTerm ? "decline_term" : "short_connect",
+        call_duration_secs: callDur,
+      });
+    }
+    return "NO_ANSWER";
+  }
+
   if (humanUtterance) {
     console.debug(
       `[DEBUG] mapOutcomeFromTranscription: Human utterance found -> ANSWERED`
@@ -1077,6 +1104,33 @@ r.post("/elevenlabs", async (req, res) => {
     console.debug(
       `[DEBUG] POST /elevenlabs: recordingUrl: ${recordingUrl}, startedAt: ${startedAt}, endedAt: ${endedAt}`
     );
+
+    // Override flat 'answered' if it's a short connect without human speech
+    try {
+      const MIN_ANSWER_SECS = Math.max(1, Number(process.env.MIN_ANSWER_DURATION_SECS ?? 10));
+      const durSecs = startedAt && endedAt ? Math.max(0, Math.round((endedAt.getTime() - startedAt.getTime()) / 1000)) : Number(body?.call_duration_secs ?? 0);
+      const transcriptArrFlat = Array.isArray(transcriptArr) ? transcriptArr : [];
+      const textOf = (m) => String(m?.message ?? m?.original_message ?? m?.text ?? m?.transcript ?? m?.content ?? "");
+      const speakerOf = (m) => String(m?.speaker ?? m?.role ?? m?.sender ?? m?.source ?? m?.speaker_name ?? "");
+      const humanUtterFlat = transcriptArrFlat.some((m) => {
+        const text = textOf(m).trim();
+        const speakerRaw = speakerOf(m).toLowerCase();
+        const isAgent = m?.is_agent === true || /\b(agent|assistant|ai|bot)\b/.test(speakerRaw);
+        const isHuman = m?.is_agent === false || speakerRaw === "user" || /\b(user|human|caller|lead|callee|customer|person)\b/.test(speakerRaw);
+        return !isAgent && isHuman && text.length >= 2;
+      });
+      const termFlat = String(body?.termination_reason || body?.metadata?.termination_reason || "").toLowerCase();
+      const DECLINE_TERMS = ["declined", "rejected", "cancelled", "canceled", "hangup", "hung up", "user busy", "caller hung up"];
+      const isDeclineTerm = DECLINE_TERMS.some((p) => termFlat.includes(p));
+      if (outcome === "ANSWERED" && ((durSecs > 0 && durSecs < MIN_ANSWER_SECS && !humanUtterFlat) || (isDeclineTerm && !humanUtterFlat))) {
+        console.debug(
+          `[DEBUG] POST /elevenlabs: Flat override ANSWERED->NO_ANSWER (dur=${durSecs}s, human=${humanUtterFlat}, term=${termFlat})`
+        );
+        outcome = "NO_ANSWER";
+      }
+    } catch (e) {
+      console.debug(`[DEBUG] POST /elevenlabs: Flat short-call override failed: ${e?.message}`);
+    }
 
     let lead = null;
     if (leadId) {
