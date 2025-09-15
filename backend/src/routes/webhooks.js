@@ -203,6 +203,44 @@ function mapOutcomeFromTranscription(data) {
     return "NO_ANSWER";
   }
 
+  // Voicemail detection (early): if any VM signals are present, force NO_ANSWER
+  // even if a stray "user" token is picked up by ASR.
+  const VM2_PATTERNS = [
+    "voicemail",
+    "voice mail",
+    "answering machine",
+    "mailbox",
+    "leave a message",
+    "after the tone",
+    "after the beep",
+    "record your message",
+    // French
+    "boîte vocale",
+    "boite vocale",
+    "messagerie vocale",
+    "laissez un message",
+    "après le bip",
+    "apres le bip",
+    "après le signal sonore",
+    "apres le signal sonore",
+  ];
+  const termHasVm2 = VM2_PATTERNS.some((p) => term.includes(p));
+  const transcriptHasVm2 = turns.some((m) =>
+    VM2_PATTERNS.some((p) => textOf(m).toLowerCase().includes(p))
+  );
+  if (vmFeatureUsed || termHasVm2 || transcriptHasVm2) {
+    console.debug(
+      `[DEBUG] mapOutcomeFromTranscription: Voicemail detected (early) -> NO_ANSWER`
+    );
+    if (LOG_SIGNALS) {
+      console.log("[EL DECISION]", {
+        outcome: "NO_ANSWER",
+        reason: "vm_signals_early",
+      });
+    }
+    return "NO_ANSWER";
+  }
+
   if (humanUtterance) {
     console.debug(
       `[DEBUG] mapOutcomeFromTranscription: Human utterance found -> ANSWERED`
