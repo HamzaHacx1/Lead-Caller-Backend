@@ -146,6 +146,60 @@ function stepsForType(type) {
   return [];
 }
 
+// Cancel all pending NO_ANSWER events from older attempts (e.g., after attempt 2
+// we don't want attempt 1's follow-ups firing). Cancels both normal and QUICK.
+async function cancelOlderNoAnswerEvents(leadId, attemptNumber) {
+  try {
+    if (!leadId || !Number.isFinite(attemptNumber) || attemptNumber <= 1) return;
+    const now = new Date();
+
+    // Build step names for attempts < attemptNumber
+    const olderSteps = [];
+    for (let i = 1; i < attemptNumber; i++) {
+      olderSteps.push(`AFTER_${i}_NO_ANSWER`);
+      olderSteps.push(`AFTER_${i}_NO_ANSWER_QUICK`);
+    }
+    if (!olderSteps.length) return;
+
+    const del = await prisma.notificationEvent.deleteMany({
+      where: {
+        leadId,
+        step: { in: olderSteps },
+        scheduledAt: { gte: now },
+      },
+    });
+    if (del?.count) {
+      console.log("[NOTIFY] canceled older no_answer events", {
+        leadId,
+        attemptNumber,
+        count: del.count,
+      });
+    }
+
+    // Best-effort: also remove pending BullMQ jobs by id
+    try {
+      const queue = getNotificationQueue();
+      for (const step of olderSteps) {
+        const jobId = `lead:${leadId}:step:${step}`;
+        try {
+          const job = await queue.getJob(jobId);
+          if (job) {
+            await job.remove();
+            console.log("[NOTIFY] removed queued job (older)", {
+              leadId,
+              step,
+            });
+          }
+        } catch (_) {}
+      }
+    } catch (e) {
+      console.warn("[NOTIFY] queue job removal failed (older)", e?.message);
+    }
+  } catch (e) {
+    console.warn("[NOTIFY] cancelOlderNoAnswerEvents failed", e?.message);
+  }
+}
+
 async function cancelPendingEventsForLead(leadId, type) {
   try {
     const stepList = stepsForType(type);
@@ -982,6 +1036,8 @@ export async function handleAttemptNotifications({
     // Cancel any pending ANSWERED follow-ups since we are in a no-answer/failed path
     if (outcome === "NO_ANSWER" || outcome === "FAILED") {
       await cancelPendingEventsForLead(lead.id, "ANSWERED");
+      // Also cancel older no-answer attempts to avoid duplicate cascades
+      await cancelOlderNoAnswerEvents(lead.id, attemptNumber);
     }
     const step = `AFTER_${attemptNumber}_NO_ANSWER`;
     console.debug(
@@ -1138,6 +1194,8 @@ export async function handleQuickAttemptNotifications({
   ) {
     // Cancel any pending ANSWERED follow-ups since we are in a no-answer/failed path
     await cancelPendingEventsForLead(lead.id, "ANSWERED");
+    // Also cancel older no-answer attempts (normal + quick)
+    await cancelOlderNoAnswerEvents(lead.id, attemptNumber);
     const step = `AFTER_${attemptNumber}_NO_ANSWER_QUICK`;
     console.debug(
       `[DEBUG] handleQuickAttemptNotifications: Processing NO_ANSWER_QUICK step ${step}`
