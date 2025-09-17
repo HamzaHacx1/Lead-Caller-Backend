@@ -2,7 +2,7 @@ import OpenAI from "openai";
 
 
 const SUPPORTED_OUTCOMES = ["ANSWERED", "NO_ANSWER"];
-const DEFAULT_MODEL = process.env.OPENAI_CALL_OUTCOME_MODEL || "gpt-5.0";
+const DEFAULT_MODEL = process.env.OPENAI_CALL_OUTCOME_MODEL || "gpt-5";
 const MAX_TURNS = (() => {
   const raw = Number(process.env.CALL_OUTCOME_TRANSCRIPT_TURNS);
   return Number.isFinite(raw) && raw > 0 ? raw : 24;
@@ -151,7 +151,7 @@ function safeJsonParse(text) {
 
 export async function inferCallOutcomeFromTranscript(data, options = {}) {
   const client = getClient();
-  const model = options.model || DEFAULT_MODEL || "gpt-4o";
+  const model = options.model || DEFAULT_MODEL || "gpt-5";
   const payload = buildModelPayload(data);
   const logPrompts = (process.env.LOG_CALL_OUTCOME_PROMPTS ?? "0") === "1";
 
