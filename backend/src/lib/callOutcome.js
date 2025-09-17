@@ -175,9 +175,12 @@ export async function inferCallOutcomeFromTranscript(data, options = {}) {
 
   const response = await client.responses.create({
     model,
+    instructions: SYSTEM_PROMPT,
     input: [
-      { role: "system", content: [{ type: "text", text: SYSTEM_PROMPT }] },
-      { role: "user", content: [{ type: "text", text: promptText }] },
+      {
+        role: "user",
+        content: [{ type: "input_text", text: promptText }],
+      },
     ],
     text: {
       format: {
