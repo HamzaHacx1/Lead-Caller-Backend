@@ -185,25 +185,33 @@ export async function inferCallOutcomeFromTranscript(data, options = {}) {
         content: promptText,
       },
     ],
-    response_format: {
-      type: "json_schema",
-      name: "lead_call_outcome", // required at top-level now
-      schema: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          outcome: { type: "string", enum: SUPPORTED_OUTCOMES },
-          confidence: { type: "number", minimum: 0, maximum: 1 },
-          reason: { type: "string" },
+    text: {
+      format: {
+        type: "json_schema",
+        name: "lead_call_outcome", // <--- required
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            outcome: { type: "string", enum: SUPPORTED_OUTCOMES },
+            confidence: { type: "number", minimum: 0, maximum: 1 },
+            reason: { type: "string" },
+          },
+          required: ["outcome"],
         },
-        required: ["outcome"],
+        strict: true, // optional but helps enforce schema
       },
     },
     max_output_tokens: 400,
   });
 
-  // New Responses API: use output_parsed
-  const parsed = response.output_parsed;
+  // The output_text will be JSON (string) matching schema -- parse it
+  let parsed = null;
+  try {
+    parsed = JSON.parse(response.output_text || "");
+  } catch (err) {
+    parsed = null;
+  }
 
   if (!parsed || !parsed.outcome) {
     throw new Error("OpenAI response did not include an outcome");
