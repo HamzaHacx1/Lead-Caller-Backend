@@ -151,7 +151,7 @@ function safeJsonParse(text) {
 
 export async function inferCallOutcomeFromTranscript(data, options = {}) {
   const client = getClient();
-  const model = options.model || DEFAULT_MODEL;
+  const model = options.model || DEFAULT_MODEL || "gpt-4o";
   const payload = buildModelPayload(data);
   const logPrompts = (process.env.LOG_CALL_OUTCOME_PROMPTS ?? "0") === "1";
 
@@ -188,7 +188,7 @@ export async function inferCallOutcomeFromTranscript(data, options = {}) {
     text: {
       format: {
         type: "json_schema",
-        name: "lead_call_outcome", // <--- required
+        name: "lead_call_outcome",
         schema: {
           type: "object",
           additionalProperties: false,
@@ -197,11 +197,12 @@ export async function inferCallOutcomeFromTranscript(data, options = {}) {
             confidence: { type: "number", minimum: 0, maximum: 1 },
             reason: { type: "string" },
           },
-          required: ["outcome"],
+          required: ["outcome", "confidence", "reason"], // ✅ now complete
         },
-        strict: true, // optional but helps enforce schema
+        strict: true,
       },
     },
+
     max_output_tokens: 400,
   });
 
