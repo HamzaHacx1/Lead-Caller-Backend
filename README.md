@@ -36,6 +36,12 @@ npm run dev   # http://localhost:5173
 Set Post-Call Webhook → `http://localhost:3001/webhooks/elevenlabs`  
 Add header `x-webhook-secret: <EL_WEBHOOK_SECRET>`.
 
+### AI Outcome Mapping
+- Set `OPENAI_API_KEY` with a key that can access GPT-5 on the OpenAI Responses API.
+- Optional overrides: `OPENAI_CALL_OUTCOME_MODEL` (defaults to `gpt-5.0`), `CALL_OUTCOME_USE_AI` (default `1`), `CALL_OUTCOME_TRANSCRIPT_TURNS`, `CALL_OUTCOME_TURN_CHAR_LIMIT`, `LOG_CALL_OUTCOME_PROMPTS`.
+- The system only emits `ANSWERED` or `NO_ANSWER`; voicemail and technical failures map to `NO_ANSWER` so downstream notifications stay consistent.
+- If the AI call fails or is disabled, the legacy heuristic fallback still runs so webhooks keep working.
+
 ---
 
 **Retry policy:** only when outcome is `failed`, cap 3 attempts.  

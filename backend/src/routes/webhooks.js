@@ -15,16 +15,12 @@ import {
   reserveCallSlotAndCreateAttempt,
   enqueueCallForAttempt,
 } from "../lib/calls.js";
+import { inferCallOutcomeFromTranscript, shouldUseAiOutcome } from "../lib/callOutcome.js";
 
 // ---- dialing policy (tweak for prod/testing) ----
 const MAX_ATTEMPTS = 3; // total attempts per lead
 const RETRY_GAP_MINUTES = 5; // legacy (unused for production); next-day scheduling is used
-const FINAL_STATUSES = new Set([
-  "ANSWERED",
-  "NO_ANSWER",
-  "VOICEMAIL",
-  "FAILED",
-]);
+const FINAL_STATUSES = new Set(["ANSWERED", "NO_ANSWER"]);
 
 const r = Router();
 const NOTIFY_QUEUE_ENABLED = (process.env.NOTIFY_QUEUE_ENABLED ?? "1") === "1";
@@ -123,7 +119,31 @@ function normPhone(p) {
   return digits;
 }
 
-function mapOutcomeFromTranscription(data) {
+async function mapOutcomeFromTranscription(data) {
+  const useAi = shouldUseAiOutcome();
+  if (useAi) {
+    try {
+      const aiResult = await inferCallOutcomeFromTranscript(data);
+      if (aiResult?.outcome) {
+        if ((process.env.LOG_EL_SIGNALS ?? "0") === "1") {
+          try {
+            console.log("[EL DECISION][ai]", {
+              outcome: aiResult.outcome,
+              reason: aiResult.reason ?? null,
+              confidence: aiResult.confidence,
+            });
+          } catch (_) {}
+        }
+        return aiResult.outcome;
+      }
+    } catch (err) {
+      console.warn("[WEBHOOK] AI call outcome inference failed", err);
+    }
+  }
+  return mapOutcomeFromTranscriptionHeuristic(data);
+}
+
+function mapOutcomeFromTranscriptionHeuristic(data) {
   console.debug(
     `[DEBUG] mapOutcomeFromTranscription: Mapping outcome for data: ${JSON.stringify(
       data
@@ -354,17 +374,17 @@ function mapOutcomeFromTranscription(data) {
     term.includes("error") ||
     term.includes("failed")
   ) {
-    console.debug(`[DEBUG] mapOutcomeFromTranscription: Returning FAILED`);
+    console.debug(`[DEBUG] mapOutcomeFromTranscription: Returning NO_ANSWER (carrier/error)`);
     if (LOG_SIGNALS) {
-      console.log("[EL DECISION]", { outcome: "FAILED", reason: "error_or_failed" });
+      console.log("[EL DECISION]", { outcome: "NO_ANSWER", reason: "error_or_failed" });
     }
-    return "FAILED";
+    return "NO_ANSWER";
   }
-  console.debug(`[DEBUG] mapOutcomeFromTranscription: Defaulting to FAILED`);
+  console.debug(`[DEBUG] mapOutcomeFromTranscription: Defaulting to NO_ANSWER`);
   if (LOG_SIGNALS) {
-    console.log("[EL DECISION]", { outcome: "FAILED", reason: "default_fallback" });
+    console.log("[EL DECISION]", { outcome: "NO_ANSWER", reason: "default_fallback" });
   }
-  return "FAILED";
+  return "NO_ANSWER";
 }
 
 /** Robust check for test leads (supports boolean/number/string flags) */
@@ -508,7 +528,7 @@ r.post("/elevenlabs", async (req, res) => {
     }
 
     const body = req.body || {};
-    let outcome = "FAILED";
+    let outcome = "NO_ANSWER";
     let convoId = body.conversation_id || body.id || null;
     console.debug(
       `[DEBUG] POST /elevenlabs: Body type: ${body.type}, conversationId: ${convoId}`
@@ -535,7 +555,7 @@ r.post("/elevenlabs", async (req, res) => {
     if (body.type === "post_call_transcription" && body.data) {
       console.debug(`[DEBUG] POST /elevenlabs: Processing structured payload`);
       const d = body.data;
-      outcome = mapOutcomeFromTranscription(d);
+      outcome = await mapOutcomeFromTranscription(d);
       console.debug(`[DEBUG] POST /elevenlabs: Mapped outcome: ${outcome}`);
 
       const m = d.metadata || {};
@@ -890,14 +910,14 @@ r.post("/elevenlabs", async (req, res) => {
           }
         }
 
-        if (["ANSWERED", "NO_ANSWER", "FAILED"].includes(outcome)) {
+        if (["ANSWERED", "NO_ANSWER"].includes(outcome)) {
           console.debug(
             `[DEBUG] POST /elevenlabs: Triggering notifications for outcome ${outcome}`
           );
           await handleQuickAttemptNotifications({
             lead,
             attemptNumber: currentAttemptNumber,
-            outcome: outcome === "FAILED" ? "NO_ANSWER" : outcome,
+            outcome,
           });
           console.debug(`[DEBUG] POST /elevenlabs: Notifications triggered`);
         }
@@ -1073,10 +1093,10 @@ r.post("/elevenlabs", async (req, res) => {
       "no-answer": "NO_ANSWER",
       no_answer: "NO_ANSWER",
       noanswer: "NO_ANSWER",
-      failed: "FAILED",
+      failed: "NO_ANSWER",
     };
     const rawOutcome = String(body.outcome || "").toLowerCase();
-    outcome = statusMap[rawOutcome] || "FAILED";
+    outcome = statusMap[rawOutcome] || "NO_ANSWER";
     console.debug(
       `[DEBUG] POST /elevenlabs: Flat outcome: ${outcome} from raw: ${rawOutcome}`
     );
@@ -1258,14 +1278,14 @@ r.post("/elevenlabs", async (req, res) => {
     }
 
     try {
-      if (["ANSWERED", "NO_ANSWER", "FAILED"].includes(outcome)) {
+      if (["ANSWERED", "NO_ANSWER"].includes(outcome)) {
         console.debug(
           `[DEBUG] POST /elevenlabs: Triggering notifications for outcome ${outcome} (flat)`
         );
         await handleQuickAttemptNotifications({
           lead,
           attemptNumber: attemptsCount + 1,
-          outcome: outcome === "FAILED" ? "NO_ANSWER" : outcome,
+          outcome,
         });
         console.debug(
           `[DEBUG] POST /elevenlabs: Notifications triggered (flat)`
