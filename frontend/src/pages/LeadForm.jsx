@@ -3,15 +3,10 @@ import { useState } from "react";
 function LeadForm() {
   const API_URL = import.meta.env.VITE_API_BASE || "http://localhost:3000";
   const [formData, setFormData] = useState({
-    fbLeadId: crypto.randomUUID(),
     full_name: "",
     phone: "",
     email: "",
-    forceNow: false,
-    ignoreWindow: false,
-    outcomes: "ANSWERED",
-    simulate: true,
-    useQuickNotifications: true,
+    timezone: "",
   });
   const [response, setResponse] = useState(null);
   const [error, setError] = useState(null);
@@ -30,15 +25,20 @@ function LeadForm() {
     setResponse(null);
 
     const payload = {
-      ...formData,
-      outcomes: formData.outcomes
-        .split(",")
-        .map((o) => o.trim())
-        .filter(Boolean),
+      full_name: formData.full_name.trim(),
+      phone: formData.phone.trim(),
     };
 
+    if (formData.email.trim()) {
+      payload.email = formData.email.trim();
+    }
+
+    if (formData.timezone.trim()) {
+      payload.timezone = formData.timezone.trim();
+    }
+
     try {
-      const res = await fetch(`${API_URL}/test/test-flow`, {
+      const res = await fetch(`${API_URL}/call/call-now`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -46,17 +46,12 @@ function LeadForm() {
       const data = await res.json();
       if (res.ok) {
         setResponse(data);
-        // Reset form with new fbLeadId
+        // Reset form fields after a successful submission
         setFormData({
-          fbLeadId: crypto.randomUUID(),
           full_name: "",
           phone: "",
           email: "",
-          forceNow: false,
-          ignoreWindow: false,
-          outcomes: "ANSWERED",
-          simulate: true,
-          useQuickNotifications: true,
+          timezone: "",
         });
       } else {
         setError(data.error || "Request failed");
@@ -70,7 +65,7 @@ function LeadForm() {
     <div className="flex items-center justify-center px-4 py-20 bg-gray-100 sm:px-6 lg:px-8">
       <div className="w-full max-w-md p-6 bg-white rounded-lg shadow-md sm:max-w-lg md:max-w-xl">
         <h2 className="mb-6 text-xl font-bold text-center text-gray-800 sm:text-2xl">
-          Test Lead Form
+          Call Now Lead Form
         </h2>
         <form onSubmit={handleSubmit}>
           <div className="mb-4">
@@ -111,67 +106,18 @@ function LeadForm() {
               className="w-full p-2 mt-1 border rounded-md focus:ring-blue-500 focus:border-blue-500 sm:p-3"
             />
           </div>
-          <div className="mb-4">
+          <div className="mb-6">
             <label className="block text-sm font-medium text-gray-700">
-              Outcomes (comma-separated, e.g. ANSWERED,NO_ANSWER)
+              Timezone (optional)
             </label>
             <input
               type="text"
-              name="outcomes"
-              value={formData.outcomes}
+              name="timezone"
+              value={formData.timezone}
               onChange={handleChange}
               className="w-full p-2 mt-1 border rounded-md focus:ring-blue-500 focus:border-blue-500 sm:p-3"
+              placeholder="e.g. America/Toronto"
             />
-          </div>
-          <div className="mb-4">
-            <label className="flex items-center">
-              <input
-                type="checkbox"
-                name="forceNow"
-                checked={formData.forceNow}
-                onChange={handleChange}
-                className="w-4 h-4 mr-2 text-blue-500 border-gray-300 rounded focus:ring-blue-500"
-              />
-              <span className="text-sm text-gray-700">Force Now</span>
-            </label>
-          </div>
-          <div className="mb-4">
-            <label className="flex items-center">
-              <input
-                type="checkbox"
-                name="ignoreWindow"
-                checked={formData.ignoreWindow}
-                onChange={handleChange}
-                className="w-4 h-4 mr-2 text-blue-500 border-gray-300 rounded focus:ring-blue-500"
-              />
-              <span className="text-sm text-gray-700">Ignore Window</span>
-            </label>
-          </div>
-          <div className="mb-4">
-            <label className="flex items-center">
-              <input
-                type="checkbox"
-                name="simulate"
-                checked={formData.simulate}
-                onChange={handleChange}
-                className="w-4 h-4 mr-2 text-blue-500 border-gray-300 rounded focus:ring-blue-500"
-              />
-              <span className="text-sm text-gray-700">Simulate</span>
-            </label>
-          </div>
-          <div className="mb-6">
-            <label className="flex items-center">
-              <input
-                type="checkbox"
-                name="useQuickNotifications"
-                checked={formData.useQuickNotifications}
-                onChange={handleChange}
-                className="w-4 h-4 mr-2 text-blue-500 border-gray-300 rounded focus:ring-blue-500"
-              />
-              <span className="text-sm text-gray-700">
-                Use Quick Notifications
-              </span>
-            </label>
           </div>
           <button
             type="submit"
