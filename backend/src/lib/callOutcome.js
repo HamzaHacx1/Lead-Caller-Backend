@@ -179,19 +179,21 @@ export async function inferCallOutcomeFromTranscript(data, options = {}) {
       { role: "system", content: [{ type: "text", text: SYSTEM_PROMPT }] },
       { role: "user", content: [{ type: "text", text: promptText }] },
     ],
-    response_format: {
-      type: "json_schema",
-      json_schema: {
-        name: "lead_call_outcome",
-        schema: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            outcome: { type: "string", enum: SUPPORTED_OUTCOMES },
-            confidence: { type: "number", minimum: 0, maximum: 1 },
-            reason: { type: "string" },
+    text: {
+      format: {
+        type: "json_schema",
+        json_schema: {
+          name: "lead_call_outcome",
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              outcome: { type: "string", enum: SUPPORTED_OUTCOMES },
+              confidence: { type: "number", minimum: 0, maximum: 1 },
+              reason: { type: "string" },
+            },
+            required: ["outcome"],
           },
-          required: ["outcome"],
         },
       },
     },
