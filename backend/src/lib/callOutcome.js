@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 
+
 const SUPPORTED_OUTCOMES = ["ANSWERED", "NO_ANSWER"];
 const DEFAULT_MODEL = process.env.OPENAI_CALL_OUTCOME_MODEL || "gpt-5.0";
 const MAX_TURNS = (() => {
@@ -37,15 +38,17 @@ const SYSTEM_PROMPT = [
 
 function sanitizeSpeaker(value) {
   if (!value) return null;
-  return String(value).toLowerCase().replace(/[^a-z]/g, "_").slice(0, 32) || null;
+  return (
+    String(value)
+      .toLowerCase()
+      .replace(/[^a-z]/g, "_")
+      .slice(0, 32) || null
+  );
 }
 
 function sanitizeText(value) {
   if (!value) return "";
-  return String(value)
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, MAX_CHARS_PER_TURN);
+  return String(value).replace(/\s+/g, " ").trim().slice(0, MAX_CHARS_PER_TURN);
 }
 
 function extractText(turn) {
@@ -61,11 +64,7 @@ function extractText(turn) {
 
 function extractSpeaker(turn) {
   return (
-    turn?.speaker ??
-    turn?.role ??
-    turn?.sender ??
-    turn?.speaker_name ??
-    null
+    turn?.speaker ?? turn?.role ?? turn?.sender ?? turn?.speaker_name ?? null
   );
 }
 
@@ -105,7 +104,8 @@ function buildModelPayload(data = {}) {
   const analysis = data.analysis || {};
   return {
     metadata: {
-      call_successful: analysis.call_successful ?? metadata.call_successful ?? null,
+      call_successful:
+        analysis.call_successful ?? metadata.call_successful ?? null,
       termination_reason: metadata.termination_reason ?? null,
       call_duration_secs:
         metadata.call_duration_secs ?? data.call_duration_secs ?? null,
@@ -134,7 +134,6 @@ function normalizeOutcome(candidate) {
   return "NO_ANSWER";
 }
 
-
 function clamp01(value) {
   const num = Number(value);
   if (!Number.isFinite(num)) return null;
@@ -155,6 +154,7 @@ export async function inferCallOutcomeFromTranscript(data, options = {}) {
   const model = options.model || DEFAULT_MODEL;
   const payload = buildModelPayload(data);
   const logPrompts = (process.env.LOG_CALL_OUTCOME_PROMPTS ?? "0") === "1";
+
   const promptText = JSON.stringify(
     {
       instructions:
@@ -175,38 +175,35 @@ export async function inferCallOutcomeFromTranscript(data, options = {}) {
 
   const response = await client.responses.create({
     model,
-    instructions: SYSTEM_PROMPT,
     input: [
       {
+        role: "system",
+        content: SYSTEM_PROMPT,
+      },
+      {
         role: "user",
-        content: [{ type: "input_text", text: promptText }],
+        content: promptText,
       },
     ],
-    text: {
-      format: {
-        type: "json_schema",
-        json_schema: {
-          name: "lead_call_outcome",
-          schema: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              outcome: { type: "string", enum: SUPPORTED_OUTCOMES },
-              confidence: { type: "number", minimum: 0, maximum: 1 },
-              reason: { type: "string" },
-            },
-            required: ["outcome"],
-          },
+    response_format: {
+      type: "json_schema",
+      name: "lead_call_outcome", // required at top-level now
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          outcome: { type: "string", enum: SUPPORTED_OUTCOMES },
+          confidence: { type: "number", minimum: 0, maximum: 1 },
+          reason: { type: "string" },
         },
+        required: ["outcome"],
       },
     },
     max_output_tokens: 400,
   });
 
-  const parsed =
-    response.output?.[0]?.parsed ??
-    response.output?.[0]?.content?.[0]?.parsed ??
-    safeJsonParse(response.output_text);
+  // New Responses API: use output_parsed
+  const parsed = response.output_parsed;
 
   if (!parsed || !parsed.outcome) {
     throw new Error("OpenAI response did not include an outcome");
@@ -214,7 +211,9 @@ export async function inferCallOutcomeFromTranscript(data, options = {}) {
 
   const outcome = normalizeOutcome(parsed.outcome);
   if (!SUPPORTED_OUTCOMES.includes(outcome)) {
-    throw new Error(`Unsupported outcome returned by OpenAI: ${parsed.outcome}`);
+    throw new Error(
+      `Unsupported outcome returned by OpenAI: ${parsed.outcome}`
+    );
   }
 
   const confidence = clamp01(parsed.confidence);
