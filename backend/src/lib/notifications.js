@@ -594,7 +594,7 @@ function getAttemptCopy(step, isAnswered = false) {
             <p>On garde ta place au chaud 🔥</p>
             <p><strong>Si tu as déjà rempli ton profil, ignore ce message 😄</strong></p>
           </div>`),
-        cta_link: copy.cta_link || BOOKING_URL,
+        cta_link: BOOKING_URL,
         closingText: sanitize("— L’équipe Emploi Rapide"),
         smsBody: () =>
           sanitize(
@@ -615,7 +615,7 @@ function getAttemptCopy(step, isAnswered = false) {
         ),
         title: sanitize("Dernier rappel !"),
         cta_text: sanitize("👉 Compléter mon dossier"),
-        cta_link: copy.cta_link || BOOKING_URL,
+        cta_link: BOOKING_URL,
         bodyText: sanitize(`
           <div>
             <p>Salut !!</p>
@@ -665,7 +665,7 @@ function getAttemptCopy(step, isAnswered = false) {
             <p><strong>Si tu as déjà rempli ton profil, ignore ce message 😄</strong></p>
           </div>
         `),
-        cta_link: copy.cta_link || BOOKING_URL,
+        cta_link: BOOKING_URL,
         closingText: sanitize("— L’équipe Emploi Rapide"),
         smsBody: () =>
           sanitize(
@@ -687,7 +687,7 @@ function getAttemptCopy(step, isAnswered = false) {
         ),
         title: sanitize("Dernier rappel !"),
         cta_text: sanitize("👉 Compléter mon dossier"),
-        cta_link: copy.cta_link || BOOKING_URL,
+        cta_link: BOOKING_URL,
         bodyText: sanitize(`
           <p>Salut !!</p>
           <p>Ton inscription est bien commencée… mais sans CV ni spécimen de chèque, on ne peut pas avancer.</p>
