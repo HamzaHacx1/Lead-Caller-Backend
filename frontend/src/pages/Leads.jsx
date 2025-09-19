@@ -9,6 +9,10 @@ export default function Leads() {
   useEffect(() => {
     api("/metrics/leads").then(setRows).catch(console.error);
   }, []);
+
+  useEffect(()=>{
+    console.log("Data - ",rows)
+  },[rows])
   const columns = [
     { key: "id", label: "ID" },
     { key: "fullName", label: "Name" },
@@ -18,6 +22,7 @@ export default function Leads() {
     { key: "status", label: "Status" },
     { key: "attempts", label: "Attempts" },
     { key: "lastOutcome", label: "Last Outcome" },
+    { key: "chequeUploaded", label: "Cheque Uploaded" },
     {
       key: "lastAttemptAt",
       label: "Last Attempt",
