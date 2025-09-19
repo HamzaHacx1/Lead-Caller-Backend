@@ -12,10 +12,73 @@ import { callOutbound } from "../lib/elevenlabs.js";
 import { QUEBEC_TZ } from "../lib/quebecTime.js";
 import { pickTz } from "../lib/schedule.js";
 import prisma from "../lib/prisma.js";
+import {
+  NOTIFICATION_TEMPLATE_STEPS,
+  getDefaultNotificationCopy,
+} from "../lib/notifications.js";
 
 const r = Router();
 const { APP_NAME = "EmploiRapide" } = process.env;
 const retryable = ["FAILED", "NO_ANSWER", "VOICEMAIL"];
+
+r.post("/seed-notification-templates", async (_req, res) => {
+  try {
+    const steps = NOTIFICATION_TEMPLATE_STEPS.map((entry) => entry.step);
+    const existing = await prisma.notificationTemplate.findMany({
+      where: { step: { in: steps } },
+    });
+
+    const existingMap = new Map(existing.map((tpl) => [tpl.step, tpl]));
+    const operations = [];
+
+    for (const step of steps) {
+      if (!existingMap.has(step)) {
+        const stepMeta = NOTIFICATION_TEMPLATE_STEPS.find(
+          (entry) => entry.step === step
+        );
+        const defaults = getDefaultNotificationCopy(step, {
+          isAnswered: stepMeta?.isAnswered,
+        });
+        const payload = {};
+        for (const field of [
+          "subject",
+          "title",
+          "subtitle",
+          "bodyText",
+          "cta_text",
+          "cta_link",
+          "closingText",
+        ]) {
+          const value = defaults?.[field];
+          if (typeof value === "string" && value.trim() !== "") {
+            payload[field] = value;
+          }
+        }
+        operations.push(
+          prisma.notificationTemplate.create({
+            data: {
+              step,
+              data: payload,
+            },
+          })
+        );
+      }
+    }
+
+    if (operations.length) {
+      await prisma.$transaction(operations);
+    }
+
+    res.json({
+      ok: true,
+      created: operations.length,
+      total: steps.length,
+    });
+  } catch (error) {
+    console.error("[TEST] seed-notification-templates failed", error);
+    res.status(500).json({ ok: false, error: "internal_error" });
+  }
+});
 
 r.post("/test-flow", async (req, res) => {
   try {

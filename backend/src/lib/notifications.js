@@ -29,6 +29,183 @@ const NO_ANSWER_DELAY_MS_3 = Number(
 const BOOKING_URL =
   process.env.BOOKING_URL || "https://emploirapide.ca/documents";
 
+const COPY_RICH_TEXT_OPTIONS = {
+  allowedTags: [
+    "p",
+    "br",
+    "strong",
+    "b",
+    "em",
+    "i",
+    "ul",
+    "ol",
+    "li",
+    "a",
+    "sup",
+    "sub",
+  ],
+  allowedAttributes: {
+    a: ["href", "target", "rel"],
+  },
+  allowedSchemes: ["http", "https", "mailto", "tel"],
+  allowedSchemesAppliedToAttributes: ["href"],
+  allowProtocolRelative: false,
+};
+
+const COPY_PLAIN_TEXT_OPTIONS = {
+  allowedTags: [],
+  allowedAttributes: {},
+};
+
+function sanitizeRichText(value) {
+  if (value == null) return undefined;
+  return sanitizeHtml(String(value), COPY_RICH_TEXT_OPTIONS);
+}
+
+function sanitizePlainText(value) {
+  if (value == null) return undefined;
+  return sanitizeHtml(String(value), COPY_PLAIN_TEXT_OPTIONS);
+}
+
+function sanitizeLink(value) {
+  if (value == null) return undefined;
+  return String(value).trim();
+}
+
+export function sanitizeTemplatePayload(payload = {}) {
+  if (!payload || typeof payload !== "object") return {};
+  const result = {};
+  const richFields = [
+    "subject",
+    "title",
+    "subtitle",
+    "bodyText",
+    "closingText",
+    "cta_text",
+  ];
+
+  for (const field of richFields) {
+    if (field in payload) {
+      const sanitized = sanitizeRichText(payload[field]);
+      if (sanitized !== undefined) result[field] = sanitized;
+    }
+  }
+
+  if ("cta_link" in payload) {
+    const link = sanitizeLink(payload.cta_link);
+    if (link !== undefined) result.cta_link = link;
+  }
+
+  if ("smsBody" in payload) {
+    const sms = sanitizePlainText(payload.smsBody);
+    if (sms !== undefined) result.smsBody = sms;
+  }
+
+  return result;
+}
+
+export const NOTIFICATION_TEMPLATE_STEPS = [
+  { step: "ANSWERED_15M", isAnswered: true },
+  { step: "ANSWERED_30M", isAnswered: true },
+  { step: "ANSWERED_24H", isAnswered: true },
+  { step: "ANSWERED_48H", isAnswered: true },
+  { step: "AFTER_1_NO_ANSWER", isAnswered: false },
+  { step: "AFTER_2_NO_ANSWER", isAnswered: false },
+  { step: "AFTER_3_NO_ANSWER", isAnswered: false },
+  { step: "AFTER_1_NO_ANSWER_QUICK", isAnswered: false },
+  { step: "AFTER_2_NO_ANSWER_QUICK", isAnswered: false },
+  { step: "AFTER_3_NO_ANSWER_QUICK", isAnswered: false },
+];
+
+const NOTIFICATION_TEMPLATE_STEP_MAP = new Map(
+  NOTIFICATION_TEMPLATE_STEPS.map((entry) => [entry.step, entry])
+);
+
+const TEMPLATE_CACHE_TTL_MS = 60 * 1000;
+const notificationTemplateCache = new Map();
+
+function getCachedTemplateOverride(step) {
+  const cached = notificationTemplateCache.get(step);
+  if (!cached) return undefined;
+  if (Date.now() - cached.timestamp > TEMPLATE_CACHE_TTL_MS) {
+    notificationTemplateCache.delete(step);
+    return undefined;
+  }
+  return cached.value;
+}
+
+function setCachedTemplateOverride(step, value) {
+  notificationTemplateCache.set(step, {
+    value,
+    timestamp: Date.now(),
+  });
+}
+
+export function invalidateNotificationTemplateCache(step) {
+  if (!step) {
+    notificationTemplateCache.clear();
+  } else {
+    notificationTemplateCache.delete(step);
+  }
+}
+
+export function primeNotificationTemplateCache(step, payload) {
+  if (!step) return;
+  const sanitized = sanitizeTemplatePayload(payload || {});
+  setCachedTemplateOverride(step, sanitized);
+}
+
+async function getTemplateOverride(step) {
+  const cached = getCachedTemplateOverride(step);
+  if (cached !== undefined) return cached;
+  try {
+    const template = await prisma.notificationTemplate.findUnique({
+      where: { step },
+    });
+    if (!template) {
+      setCachedTemplateOverride(step, null);
+      return null;
+    }
+    const sanitized = sanitizeTemplatePayload(template.data || {});
+    setCachedTemplateOverride(step, sanitized);
+    return sanitized;
+  } catch (error) {
+    console.warn(
+      `[NOTIFY] getTemplateOverride failed for step ${step}: ${error?.message}`
+    );
+    setCachedTemplateOverride(step, null);
+    return null;
+  }
+}
+
+function mergeCopy(base = {}, override = {}) {
+  if (!override || Object.keys(override).length === 0) return base;
+  const merged = { ...base };
+  for (const [key, value] of Object.entries(override)) {
+    if (value !== undefined) {
+      merged[key] = value;
+    }
+  }
+  return merged;
+}
+
+export async function getNotificationCopy(step, options = {}) {
+  const meta = NOTIFICATION_TEMPLATE_STEP_MAP.get(step);
+  const isAnswered =
+    options.isAnswered ?? options.isAnsweredOverride ?? meta?.isAnswered ?? false;
+  const base = getAttemptCopy(step, isAnswered);
+  const override = await getTemplateOverride(step);
+  if (!override) return base;
+  return mergeCopy(base, override);
+}
+
+export function getDefaultNotificationCopy(step, options = {}) {
+  const meta = NOTIFICATION_TEMPLATE_STEP_MAP.get(step);
+  const isAnswered =
+    options.isAnswered ?? options.isAnsweredOverride ?? meta?.isAnswered ?? false;
+  return getAttemptCopy(step, isAnswered);
+}
+
 // Robust test-lead detection (boolean/number/string truthy)
 function isTestLead(lead) {
   try {
@@ -389,30 +566,7 @@ function getAttemptCopy(step, isAnswered = false) {
     `[DEBUG] getAttemptCopy: Fetching copy for step ${step}, isAnswered: ${isAnswered}`
   );
   const sanitize = (text) => {
-    console.debug(`[DEBUG] getAttemptCopy: Sanitizing text: ${text}`);
-    const sanitized = sanitizeHtml(text, {
-      // Allow basic formatting + links so line breaks render in emails
-      allowedTags: [
-        "p",
-        "br",
-        "strong",
-        "b",
-        "em",
-        "i",
-        "ul",
-        "ol",
-        "li",
-        "a",
-        "sup",
-        "sub",
-      ],
-      allowedAttributes: {
-        a: ["href", "target", "rel"],
-      },
-      allowedSchemes: ["http", "https", "mailto", "tel"],
-      allowedSchemesAppliedToAttributes: ["href"],
-      allowProtocolRelative: false,
-    });
+    const sanitized = sanitizeRichText(text);
     console.debug(`[DEBUG] getAttemptCopy: Sanitized text: ${sanitized}`);
     return sanitized;
   };
@@ -440,7 +594,7 @@ function getAttemptCopy(step, isAnswered = false) {
             <p>On garde ta place au chaud 🔥</p>
             <p><strong>Si tu as déjà rempli ton profil, ignore ce message 😄</strong></p>
           </div>`),
-        cta_link: BOOKING_URL,
+        cta_link: copy.cta_link || BOOKING_URL,
         closingText: sanitize("— L’équipe Emploi Rapide"),
         smsBody: () =>
           sanitize(
@@ -461,7 +615,7 @@ function getAttemptCopy(step, isAnswered = false) {
         ),
         title: sanitize("Dernier rappel !"),
         cta_text: sanitize("👉 Compléter mon dossier"),
-        cta_link: BOOKING_URL,
+        cta_link: copy.cta_link || BOOKING_URL,
         bodyText: sanitize(`
           <div>
             <p>Salut !!</p>
@@ -511,7 +665,7 @@ function getAttemptCopy(step, isAnswered = false) {
             <p><strong>Si tu as déjà rempli ton profil, ignore ce message 😄</strong></p>
           </div>
         `),
-        cta_link: BOOKING_URL,
+        cta_link: copy.cta_link || BOOKING_URL,
         closingText: sanitize("— L’équipe Emploi Rapide"),
         smsBody: () =>
           sanitize(
@@ -533,7 +687,7 @@ function getAttemptCopy(step, isAnswered = false) {
         ),
         title: sanitize("Dernier rappel !"),
         cta_text: sanitize("👉 Compléter mon dossier"),
-        cta_link: BOOKING_URL,
+        cta_link: copy.cta_link || BOOKING_URL,
         bodyText: sanitize(`
           <p>Salut !!</p>
           <p>Ton inscription est bien commencée… mais sans CV ni spécimen de chèque, on ne peut pas avancer.</p>
@@ -1047,7 +1201,6 @@ export async function handleAttemptNotifications({
       console.debug(
         `[DEBUG] handleAttemptNotifications: Idempotency check passed for ${step}_SCHEDULED`
       );
-      const copy = getAttemptCopy(step);
       const tz = pickTz(lead.timezone || QUEBEC_TZ);
       const now = moment().tz(tz);
       const isTest = isTestLead(lead);
@@ -1204,7 +1357,6 @@ export async function handleQuickAttemptNotifications({
       console.debug(
         `[DEBUG] handleQuickAttemptNotifications: Idempotency check passed for ${step}_SCHEDULED`
       );
-      const copy = getAttemptCopy(step);
       const tz = pickTz(lead.timezone || QUEBEC_TZ);
       const now = moment().tz(tz);
       const isTest = isTestLead(lead);
@@ -1671,7 +1823,7 @@ async function processScheduledNotification(lead, step, attemptNumber) {
     console.debug(
       `[DEBUG] processScheduledNotification: Idempotency check passed for ${step}_SENT`
     );
-    const copy = getAttemptCopy(step, true);
+    const copy = await getNotificationCopy(step, { isAnswered: true });
     await sendEmailAndSMS({
       lead,
       subject: copy.subject,
@@ -1683,7 +1835,7 @@ async function processScheduledNotification(lead, step, attemptNumber) {
         title: copy.title,
         subtitle: copy.subtitle,
         cta_text: copy.cta_text,
-        cta_link: BOOKING_URL,
+        cta_link: copy.cta_link || BOOKING_URL,
         bodyText: copy.bodyText,
         closingText: copy.closingText,
       },
@@ -1709,7 +1861,7 @@ async function processQuickScheduledNotification(lead, step, attemptNumber) {
     console.debug(
       `[DEBUG] processQuickScheduledNotification: Idempotency check passed for ${step}_SENT`
     );
-    const copy = getAttemptCopy(step, true);
+    const copy = await getNotificationCopy(step, { isAnswered: true });
     await sendEmailAndSMS({
       lead,
       subject: copy.subject,
@@ -1721,7 +1873,7 @@ async function processQuickScheduledNotification(lead, step, attemptNumber) {
         title: copy.title,
         subtitle: copy.subtitle,
         cta_text: copy.cta_text,
-        cta_link: BOOKING_URL,
+        cta_link: copy.cta_link || BOOKING_URL,
         bodyText: copy.bodyText,
         closingText: copy.closingText,
       },
@@ -1745,7 +1897,7 @@ async function processNoAnswerScheduledNotification(lead, step, attemptNumber) {
     console.debug(
       `[DEBUG] processNoAnswerScheduledNotification: Idempotency check passed for ${step}_SENT`
     );
-    const copy = getAttemptCopy(step, false);
+    const copy = await getNotificationCopy(step, { isAnswered: false });
     await sendEmailAndSMS({
       lead,
       subject: copy.subject,
@@ -1758,7 +1910,7 @@ async function processNoAnswerScheduledNotification(lead, step, attemptNumber) {
         title: copy.title,
         subtitle: copy.subtitle,
         cta_text: copy.cta_text,
-        cta_link: BOOKING_URL,
+        cta_link: copy.cta_link || BOOKING_URL,
         bodyText: copy.bodyText,
         closingText: copy.closingText,
       },

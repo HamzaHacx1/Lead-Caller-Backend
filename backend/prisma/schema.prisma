@@ -71,8 +71,7 @@ model Lead {
   metadata        Json?
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
-
-  // Relations
+    // Relations
   callAttempts    CallAttempt[]
   conversations   Conversation[]
   notificationEvents NotificationEvent[]
@@ -174,4 +173,12 @@ model NotificationEvent {
   lead        Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
 
   @@index([leadId, createdAt])
+}
+
+model NotificationTemplate {
+  id        Int      @id @default(autoincrement())
+  step      String   @unique
+  data      Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }

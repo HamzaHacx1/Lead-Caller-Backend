@@ -8,11 +8,13 @@ import Attempts from "./pages/Attempts";
 import Login from "./pages/Login";
 import Leads from "./pages/Leads";
 import Sms from "./pages/Sms";
+import Notifications from "./pages/Notifications";
 
 const tabs = [
   { key: "dashboard", label: "Dashboard", component: Dashboard },
   { key: "leads", label: "Leads", component: Leads },
   { key: "attempts", label: "Attempts", component: Attempts },
+  { key: "notifications", label: "Notifications", component: Notifications },
   { key: "sms", label: "SMS", component: Sms },
   { key: "form", label: "Lead Form", component: LeadForm }, // New tab for the form
 ];

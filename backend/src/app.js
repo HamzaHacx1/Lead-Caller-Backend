@@ -19,6 +19,7 @@ import { setIo } from "./lib/realtime.js";
 import intake from "./routes/intake.js";
 import n8n from "./tests/calls.js";
 import sms from "./routes/sms.js";
+import notificationRoutes from "./routes/notifications.js";
 import { startNotificationsWorker } from "./workers/notifications.worker.js";
 import { startCallsWorker } from "./workers/calls.worker.js";
 
@@ -93,6 +94,7 @@ app.use("/webhooks", webhooks);
 app.use("/metrics", metrics);
 app.use("/auth", authRoutes);
 app.use("/sms", sms);
+app.use("/notifications", notificationRoutes);
 app.use("/test", testApi);
 app.use("/call", n8n);
 // --- HTTP + Socket.IO ---
