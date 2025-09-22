@@ -163,12 +163,6 @@ function mapOutcomeFromTranscriptionHeuristic(data) {
     `[DEBUG] mapOutcomeFromTranscription: call_successful: ${cs}, termination_reason: ${term}`
   );
 
-  // Build helpers for transcript and features
-  const features = data.metadata?.features_usage || {};
-  const vmFeatureUsed =
-    features?.voicemail_detection?.used === true ||
-    String(features?.voicemail_detection?.used || "").toLowerCase() === "true";
-
   const turns = Array.isArray(data.transcript) ? data.transcript : [];
   const textOf = (m) =>
     String(
@@ -177,13 +171,13 @@ function mapOutcomeFromTranscriptionHeuristic(data) {
   const speakerOf = (m) =>
     String(m?.speaker ?? m?.role ?? m?.sender ?? m?.source ?? m?.speaker_name ?? "");
 
-  // Detect human/user utterance anywhere in the call
   let humanUtterance = false;
   try {
     humanUtterance = turns.some((m) => {
       const text = textOf(m).trim();
       const speakerRaw = speakerOf(m).toLowerCase();
-      const isAgent = m?.is_agent === true || /\b(agent|assistant|ai|bot)\b/.test(speakerRaw);
+      const isAgent =
+        m?.is_agent === true || /\b(agent|assistant|ai|bot)\b/.test(speakerRaw);
       const isHuman =
         m?.is_agent === false ||
         speakerRaw === "user" ||
@@ -196,8 +190,10 @@ function mapOutcomeFromTranscriptionHeuristic(data) {
     );
   }
 
-  // Short-call override: treat brief connects with no human speech as NO_ANSWER
-  const MIN_ANSWER_SECS = Math.max(1, Number(process.env.MIN_ANSWER_DURATION_SECS ?? 10));
+  const MIN_ANSWER_SECS = Math.max(
+    1,
+    Number(process.env.MIN_ANSWER_DURATION_SECS ?? 10)
+  );
   const DECLINE_TERMS = [
     "declined",
     "rejected",
@@ -209,7 +205,11 @@ function mapOutcomeFromTranscriptionHeuristic(data) {
     "caller hung up",
   ];
   const isDeclineTerm = DECLINE_TERMS.some((p) => term.includes(p));
-  if ((callDur > 0 && callDur < MIN_ANSWER_SECS && !humanUtterance) || (isDeclineTerm && !humanUtterance)) {
+  if ((
+    callDur > 0 &&
+    callDur < MIN_ANSWER_SECS &&
+    !humanUtterance
+  ) || (isDeclineTerm && !humanUtterance)) {
     console.debug(
       `[DEBUG] mapOutcomeFromTranscription: Short/declined connect (dur=${callDur}s, human=${humanUtterance}) -> NO_ANSWER`
     );
@@ -218,44 +218,6 @@ function mapOutcomeFromTranscriptionHeuristic(data) {
         outcome: "NO_ANSWER",
         reason: isDeclineTerm ? "decline_term" : "short_connect",
         call_duration_secs: callDur,
-      });
-    }
-    return "NO_ANSWER";
-  }
-
-  // Voicemail detection (early): if any VM signals are present, force NO_ANSWER
-  // even if a stray "user" token is picked up by ASR.
-  const VM2_PATTERNS = [
-    "voicemail",
-    "voice mail",
-    "answering machine",
-    "mailbox",
-    "leave a message",
-    "after the tone",
-    "after the beep",
-    "record your message",
-    // French
-    "boîte vocale",
-    "boite vocale",
-    "messagerie vocale",
-    "laissez un message",
-    "après le bip",
-    "apres le bip",
-    "après le signal sonore",
-    "apres le signal sonore",
-  ];
-  const termHasVm2 = VM2_PATTERNS.some((p) => term.includes(p));
-  const transcriptHasVm2 = turns.some((m) =>
-    VM2_PATTERNS.some((p) => textOf(m).toLowerCase().includes(p))
-  );
-  if (vmFeatureUsed || termHasVm2 || transcriptHasVm2) {
-    console.debug(
-      `[DEBUG] mapOutcomeFromTranscription: Voicemail detected (early) -> NO_ANSWER`
-    );
-    if (LOG_SIGNALS) {
-      console.log("[EL DECISION]", {
-        outcome: "NO_ANSWER",
-        reason: "vm_signals_early",
       });
     }
     return "NO_ANSWER";
@@ -271,7 +233,6 @@ function mapOutcomeFromTranscriptionHeuristic(data) {
     return "ANSWERED";
   }
 
-  // If ElevenLabs marks the call as successful, count as ANSWERED
   if (success) {
     console.debug(`[DEBUG] mapOutcomeFromTranscription: Returning ANSWERED`);
     if (LOG_SIGNALS) {
@@ -280,29 +241,6 @@ function mapOutcomeFromTranscriptionHeuristic(data) {
     return "ANSWERED";
   }
 
-  // Direct voicemail detection using termination, features, or transcript hints
-  const VM_PATTERNS = [
-    "voicemail",
-    "answering machine",
-    "mailbox",
-    "leave a message",
-    "after the tone",
-    "after the beep",
-    "record your message",
-    // French
-    "boite vocale",
-    "boîte vocale",
-    "messagerie vocale",
-    "laissez un message",
-    "apres le bip",
-    "après le bip",
-    "apres le signal sonore",
-    "après le signal sonore",
-  ];
-  const termHasVm = VM_PATTERNS.some((p) => term.includes(p));
-  const transcriptHasVm = turns.some((m) =>
-    VM_PATTERNS.some((p) => textOf(m).toLowerCase().includes(p))
-  );
   if (LOG_SIGNALS) {
     try {
       console.log("[EL SIGNALS]", {
@@ -311,9 +249,6 @@ function mapOutcomeFromTranscriptionHeuristic(data) {
         success,
         termination_reason: term,
         call_duration_secs: callDur,
-        vmFeatureUsed,
-        termHasVm,
-        transcriptHasVm,
         humanUtterance,
         turnsCount: turns.length,
         firstTwo: turns.slice(0, 2).map((t) => ({
@@ -323,22 +258,7 @@ function mapOutcomeFromTranscriptionHeuristic(data) {
       });
     } catch {}
   }
-  if (vmFeatureUsed || termHasVm || transcriptHasVm) {
-    console.debug(
-      `[DEBUG] mapOutcomeFromTranscription: Voicemail detected -> NO_ANSWER`
-    );
-    if (LOG_SIGNALS) {
-      console.log("[EL DECISION]", {
-        outcome: "NO_ANSWER",
-        reason: "vm_signals",
-      });
-    }
-    return "NO_ANSWER";
-  }
 
-  // (success already handled above)
-
-  // Simplest rule: if remote party ended the call (user picked up then dropped), count as ANSWERED.
   if (term.includes("remote party") || term.includes("ended by remote")) {
     console.debug(
       `[DEBUG] mapOutcomeFromTranscription: remote party hangup -> ANSWERED (dur=${callDur}s)`
