@@ -15,7 +15,6 @@ import {
   reserveCallSlotAndCreateAttempt,
   enqueueCallForAttempt,
 } from "../lib/calls.js";
-import { inferCallOutcomeFromTranscript, shouldUseAiOutcome } from "../lib/callOutcome.js";
 
 // ---- dialing policy (tweak for prod/testing) ----
 const MAX_ATTEMPTS = 3; // total attempts per lead
@@ -119,26 +118,130 @@ function normPhone(p) {
   return digits;
 }
 
-async function mapOutcomeFromTranscription(data) {
-  const useAi = shouldUseAiOutcome();
-  if (useAi) {
-    try {
-      const aiResult = await inferCallOutcomeFromTranscript(data);
-      if (aiResult?.outcome) {
-        if ((process.env.LOG_EL_SIGNALS ?? "0") === "1") {
-          try {
-            console.log("[EL DECISION][ai]", {
-              outcome: aiResult.outcome,
-              reason: aiResult.reason ?? null,
-              confidence: aiResult.confidence,
-            });
-          } catch (_) {}
-        }
-        return aiResult.outcome;
-      }
-    } catch (err) {
-      console.warn("[WEBHOOK] AI call outcome inference failed", err);
+const ANSWERED_STATUS_HINTS = new Set([
+  "success",
+  "answered",
+  "human_answered",
+  "live_answer",
+  "connected",
+  "call_completed",
+]);
+
+const NO_ANSWER_STATUS_HINTS = new Set([
+  "failed",
+  "failure",
+  "voicemail",
+  "voice_mail",
+  "answering_machine",
+  "answeringmachine",
+  "machine",
+  "no_answer",
+  "noanswer",
+  "no_response",
+  "declined",
+  "rejected",
+  "busy",
+  "user_busy",
+  "canceled",
+  "cancelled",
+  "terminated",
+  "termination",
+  "hangup",
+  "hung_up",
+  "carrier_error",
+  "error",
+  "silence",
+]);
+
+function normalizeStatusKey(value) {
+  if (value === null || value === undefined) return "";
+  return String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function mapStatusValueToOutcome(rawStatus) {
+  const key = normalizeStatusKey(rawStatus);
+  if (!key) return null;
+  if (ANSWERED_STATUS_HINTS.has(key)) return "ANSWERED";
+  if (NO_ANSWER_STATUS_HINTS.has(key)) return "NO_ANSWER";
+  if (key.includes("voicemail")) return "NO_ANSWER";
+  if (key.includes("busy")) return "NO_ANSWER";
+  if (key.includes("cancel")) return "NO_ANSWER";
+  if (key.includes("terminate")) return "NO_ANSWER";
+  if (key.includes("fail")) return "NO_ANSWER";
+  return null;
+}
+
+function pickOutcomeFromStatusSignals({ successFlag, statuses }) {
+  if (successFlag === true) {
+    return "ANSWERED";
+  }
+  if (successFlag === false) {
+    return "NO_ANSWER";
+  }
+  if (typeof successFlag === "number" && Number.isFinite(successFlag)) {
+    if (successFlag === 1) return "ANSWERED";
+    if (successFlag === 0) return "NO_ANSWER";
+  }
+  if (typeof successFlag === "string" && successFlag.length > 0) {
+    const normalized = normalizeStatusKey(successFlag);
+    if (["true", "yes", "y", "success", "answered", "1"].includes(normalized)) {
+      return "ANSWERED";
     }
+    if (["false", "no", "n", "0"].includes(normalized)) {
+      return "NO_ANSWER";
+    }
+    const mapped = mapStatusValueToOutcome(successFlag);
+    if (mapped) return mapped;
+  }
+  if (Array.isArray(statuses)) {
+    for (const raw of statuses) {
+      const mapped = mapStatusValueToOutcome(raw);
+      if (mapped) return mapped;
+    }
+  }
+  return null;
+}
+
+async function mapOutcomeFromTranscription(data) {
+  const statusHints = [
+    data?.analysis?.call_status,
+    data?.analysis?.call_outcome,
+    data?.analysis?.termination_reason,
+    data?.metadata?.phone_call?.status,
+    data?.metadata?.phone_call?.call_status,
+    data?.metadata?.phone_call?.call_result,
+    data?.metadata?.phone_call?.termination_reason,
+    data?.metadata?.call_status,
+    data?.metadata?.call_result,
+    data?.metadata?.termination_reason,
+    data?.metadata?.status,
+    data?.status,
+  ];
+  const successFlag =
+    data?.analysis?.call_successful ??
+    data?.metadata?.call_successful ??
+    data?.metadata?.phone_call?.call_successful ??
+    data?.metadata?.phone_call?.was_successful ??
+    null;
+  const mapped = pickOutcomeFromStatusSignals({
+    successFlag,
+    statuses: statusHints,
+  });
+  if (mapped) {
+    if ((process.env.LOG_EL_SIGNALS ?? "0") === "1") {
+      try {
+        console.log("[EL DECISION][status]", {
+          outcome: mapped,
+          successFlag,
+          statuses: statusHints.filter((s) => s !== undefined && s !== null).slice(0, 6),
+        });
+      } catch (_) {}
+    }
+    return mapped;
   }
   return mapOutcomeFromTranscriptionHeuristic(data);
 }
@@ -1004,19 +1107,31 @@ r.post("/elevenlabs", async (req, res) => {
     /** ---------- Fallback: flat payloads ---------- */
     /** ---------- Fallback: flat payloads ---------- */
     console.debug(`[DEBUG] POST /elevenlabs: Processing flat payload`);
-    const statusMap = {
-      answered: "ANSWERED",
-      voicemail: "NO_ANSWER",
-      answering_machine: "NO_ANSWER",
-      "answering-machine": "NO_ANSWER",
-      machine: "NO_ANSWER",
-      "no-answer": "NO_ANSWER",
-      no_answer: "NO_ANSWER",
-      noanswer: "NO_ANSWER",
-      failed: "NO_ANSWER",
-    };
-    const rawOutcome = String(body.outcome || "").toLowerCase();
-    outcome = statusMap[rawOutcome] || "NO_ANSWER";
+    const flatStatusHints = [
+      body?.outcome,
+      body?.status,
+      body?.call_status,
+      body?.termination_reason,
+      body?.result,
+      body?.analysis?.call_status,
+      body?.analysis?.call_outcome,
+      body?.analysis?.termination_reason,
+      body?.metadata?.call_status,
+      body?.metadata?.call_result,
+      body?.metadata?.termination_reason,
+    ];
+    const flatSuccessFlag =
+      body?.call_successful ??
+      body?.success ??
+      body?.analysis?.call_successful ??
+      body?.metadata?.call_successful ??
+      null;
+    outcome =
+      pickOutcomeFromStatusSignals({
+        successFlag: flatSuccessFlag,
+        statuses: flatStatusHints,
+      }) || "NO_ANSWER";
+    const rawOutcome = normalizeStatusKey(body?.outcome);
     console.debug(
       `[DEBUG] POST /elevenlabs: Flat outcome: ${outcome} from raw: ${rawOutcome}`
     );
@@ -1026,6 +1141,10 @@ r.post("/elevenlabs", async (req, res) => {
         console.log("[EL DECISION][flat]", {
           outcome,
           rawOutcome,
+          successFlag: flatSuccessFlag,
+          statusHints: flatStatusHints
+            .filter((s) => s !== undefined && s !== null)
+            .slice(0, 6),
           transcript_present: Boolean(body?.transcript),
           transcript_type: Array.isArray(body?.transcript) ? "array" : typeof body?.transcript,
         });
