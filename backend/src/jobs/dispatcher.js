@@ -5,6 +5,10 @@ import { sendEmail, sendSMS } from "../helpers/notify.js";
 import { renderTemplate as renderHbsFile } from "../helpers/renderTemplates.js";
 import { START, END, pickTz } from "../lib/schedule.js";
 import { callOutbound } from "../lib/elevenlabs.js";
+import {
+  enqueueCallForAttempt,
+  rescheduleScheduledAttempt,
+} from "../lib/calls.js";
 import { QUEBEC_TZ } from "../lib/quebecTime.js";
 import prisma from "../lib/prisma.js";
 
@@ -26,6 +30,19 @@ const PRECALL_ENABLED = (process.env.PRECALL_ENABLED ?? "1") === "1";
 const PRECALL_CALL_DELAY_MS = Math.max(
   0,
   Number(process.env.PRECALL_CALL_DELAY_MS ?? "300000")
+);
+
+const RESCUE_GRACE_MINUTES = Math.max(
+  1,
+  Number(process.env.CALL_RESCUE_GRACE_MINUTES ?? "10")
+);
+const RESCUE_DELAY_MINUTES = Math.max(
+  1,
+  Number(process.env.CALL_RESCUE_DELAY_MINUTES ?? "5")
+);
+const RESCUE_BATCH_SIZE = Math.max(
+  1,
+  Number(process.env.CALL_RESCUE_BATCH ?? "25")
 );
 
 // ----------------------------------------------------------------------------
@@ -112,6 +129,78 @@ export async function sendPreCallNudge(lead, attempt) {
       await sendSMS({ to: String(lead.phone).trim(), body: smsBody });
     } catch (e) {}
   }
+}
+
+async function rescueStaleScheduledLeads() {
+  const cutoff = new Date(Date.now() - RESCUE_GRACE_MINUTES * 60 * 1000);
+  const staleLeads = await prisma.lead.findMany({
+    where: {
+      status: "SCHEDULED",
+      nextScheduledAt: { not: null, lt: cutoff },
+    },
+    select: {
+      id: true,
+      timezone: true,
+    },
+    orderBy: [{ nextScheduledAt: "asc" }, { id: "asc" }],
+    take: RESCUE_BATCH_SIZE,
+  });
+
+  let rescued = false;
+
+  for (const lead of staleLeads) {
+    const got = await prisma.$queryRaw`
+      SELECT pg_try_advisory_lock(${BigInt(lead.id)}) AS ok;
+    `;
+    if (!got?.[0]?.ok) continue;
+
+    try {
+      const attempt = await prisma.callAttempt.findFirst({
+        where: { leadId: lead.id, status: "SCHEDULED" },
+        orderBy: [{ scheduledAt: "asc" }, { id: "asc" }],
+      });
+      if (!attempt) continue;
+
+      const tz = pickTz(lead.timezone || QUEBEC_TZ);
+      const earliestUnix = moment()
+        .tz(tz)
+        .add(RESCUE_DELAY_MINUTES, "minutes")
+        .unix();
+
+      const rescheduled = await rescheduleScheduledAttempt({
+        leadId: lead.id,
+        attemptId: attempt.id,
+        tz,
+        earliestUnix,
+        rescheduleReason: "dispatcher_stale_rescue",
+      });
+
+      if (!rescheduled) continue;
+
+      rescued = true;
+
+      try {
+        await enqueueCallForAttempt({
+          leadId: lead.id,
+          attemptId: rescheduled.attempt.id,
+          attemptNumber: rescheduled.attempt.attemptNumber,
+          scheduledUnix: rescheduled.scheduledUnix,
+        });
+      } catch (queueErr) {
+        logDisp("warn", "Rescue enqueue failed", {
+          id: lead.id,
+          attemptId: rescheduled.attempt.id,
+          error: queueErr?.message,
+        });
+      }
+    } catch (err) {
+      logDisp("warn", "Rescue failed", { id: lead.id, error: err?.message });
+    } finally {
+      await prisma.$queryRaw`SELECT pg_advisory_unlock(${BigInt(lead.id)});`;
+    }
+  }
+
+  return rescued;
 }
 
 async function claimOneDueLead(limitWindowCheck = true) {
@@ -427,6 +516,11 @@ export async function runDispatcherOnce() {
   logDisp("info", "Tick start", null);
   // First, prioritize any due leads over cleanup work.
   let madeProgress = false;
+
+  const rescued = await rescueStaleScheduledLeads();
+  if (rescued) {
+    madeProgress = true;
+  }
   for (let i = 0; i < 12; i++) {
     const ok = await claimOneDueLead(true);
     if (!ok) break;

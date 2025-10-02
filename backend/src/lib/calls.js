@@ -12,6 +12,8 @@ import {
 import { QUEBEC_TZ } from "./quebecTime.js";
 import { getCallQueue } from "./redisQueue.js";
 
+const RESCUE_REASON_DEFAULT = "auto_reschedule";
+
 const PRECALL_NUDGE_MS = Math.max(
   0,
   Number(process.env.PRECALL_CALL_DELAY_MS ?? 5 * 60 * 1000)
@@ -97,6 +99,99 @@ export async function reserveCallSlotAndCreateAttempt({ leadId, attemptNumber, t
   return result;
 }
 
+/**
+ * Move an existing scheduled attempt to a new slot while keeping the attempt number.
+ * Returns { attempt, scheduledUnix } or null if the attempt/lead can no longer be moved.
+ */
+export async function rescheduleScheduledAttempt({
+  leadId,
+  attemptId,
+  tz,
+  earliestUnix,
+  rescheduleReason = RESCUE_REASON_DEFAULT,
+}) {
+  const zone = pickTz(tz || QUEBEC_TZ);
+  const baseUnix = ceilToSlotUnix(
+    Number.isFinite(earliestUnix) ? earliestUnix : moment().tz(zone).add(10, "minutes").unix()
+  );
+
+  const result = await prisma.$transaction(async (tx) => {
+    const attempt = await tx.callAttempt.findUnique({ where: { id: attemptId } });
+    if (!attempt || attempt.status !== "SCHEDULED" || attempt.leadId !== leadId) {
+      return null;
+    }
+
+    const lead = await tx.lead.findUnique({ where: { id: leadId } });
+    if (!lead || lead.status !== "SCHEDULED") {
+      return null;
+    }
+
+    let scheduledUnix = baseUnix;
+    let tries = 0;
+    while (tries < 300) {
+      scheduledUnix = rollForwardToWindowUnix(scheduledUnix, zone);
+
+      const key = slotKeyForUnix(scheduledUnix);
+      const lockRow = await tx.$queryRaw`SELECT pg_try_advisory_xact_lock(${key}) AS ok;`;
+      if (!lockRow?.[0]?.ok) {
+        scheduledUnix += SLOT_SECS;
+        tries += 1;
+        continue;
+      }
+
+      const begin = new Date(scheduledUnix * 1000);
+      const end = new Date((scheduledUnix + SLOT_SECS - 1) * 1000);
+      const clash = await tx.callAttempt.findFirst({
+        where: {
+          status: "SCHEDULED",
+          scheduledAt: { gte: begin, lte: end },
+          NOT: { id: attemptId },
+        },
+        select: { id: true },
+      });
+      if (clash) {
+        scheduledUnix += SLOT_SECS;
+        tries += 1;
+        continue;
+      }
+
+      const payloadObj =
+        attempt.payload && typeof attempt.payload === "object" && !Array.isArray(attempt.payload)
+          ? { ...attempt.payload }
+          : {};
+
+      payloadObj.last_reschedule = {
+        reason: rescheduleReason,
+        from: attempt.scheduledAt ? new Date(attempt.scheduledAt).toISOString() : null,
+        at: new Date().toISOString(),
+      };
+
+      const updatedAttempt = await tx.callAttempt.update({
+        where: { id: attempt.id },
+        data: {
+          scheduledAt: new Date(scheduledUnix * 1000),
+          payload: payloadObj,
+        },
+      });
+
+      await tx.lead.update({
+        where: { id: leadId },
+        data: {
+          nextScheduledAt: new Date(scheduledUnix * 1000),
+          status: "SCHEDULED",
+          lastProcessedAt: new Date(),
+        },
+      });
+
+      return { attempt: updatedAttempt, scheduledUnix };
+    }
+
+    throw new Error("no_free_slot_for_reschedule");
+  });
+
+  return result;
+}
+
 /** Enqueue the call job to fire pre-nudge then call at the planned time. */
 export async function enqueueCallForAttempt({ leadId, attemptId, attemptNumber, scheduledUnix }) {
   const queue = getCallQueue();
@@ -105,6 +200,18 @@ export async function enqueueCallForAttempt({ leadId, attemptId, attemptNumber, 
   const delay = Math.max(0, runAtMs - Date.now());
 
   const jobId = `lead:${leadId}:attempt:${attemptNumber}`;
+  try {
+    const existing = await queue.getJob(jobId);
+    if (existing) {
+      const state = await existing.getState().catch(() => null);
+      if (["delayed", "waiting", "failed"].includes(state)) {
+        await existing.remove().catch(() => {});
+      }
+    }
+  } catch (e) {
+    // Best effort; if redis unavailable we still try to enqueue below
+  }
+
   await queue.add(
     "place-call",
     { leadId, attemptId, attemptNumber, callAtUnix },
