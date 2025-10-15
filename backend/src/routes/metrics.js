@@ -5,6 +5,42 @@ import prisma from "../lib/prisma.js";
 
 const r = Router();
 
+/** ---------------- constants ---------------- */
+const LEAD_STATUS_SET = new Set([
+  "NEW",
+  "SCHEDULED",
+  "IN_PROGRESS",
+  "ANSWERED",
+  "VOICEMAIL",
+  "NO_ANSWER",
+  "FAILED",
+  "ERROR",
+  "ARCHIVED",
+]);
+
+const ATTEMPT_STATUS_FINAL = [
+  "ANSWERED",
+  "VOICEMAIL",
+  "NO_ANSWER",
+  "FAILED",
+  "CANCELED",
+];
+
+const ATTEMPT_STATUS_COUNTABLE = [
+  "ANSWERED",
+  "VOICEMAIL",
+  "NO_ANSWER",
+  "FAILED",
+];
+
+const STATUS_KEY_MAP = {
+  ANSWERED: "answered",
+  VOICEMAIL: "voicemail",
+  NO_ANSWER: "noAnswer",
+  FAILED: "failed",
+  CANCELED: "canceled",
+};
+
 /** ---------------- utils ---------------- */
 function parseISODate(d) {
   if (!d) return null;
@@ -24,9 +60,7 @@ function dateKeyUTC(d) {
 function clampRange(fromStr, toStr) {
   // defaults: last 7 days including today
   const today = new Date();
-  const todayUTC = new Date(
-    Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate())
-  );
+  const todayUTC = toUTCDate(today);
   const defFrom = addDays(todayUTC, -6);
 
   const from = parseISODate(fromStr) || defFrom;
@@ -36,16 +70,60 @@ function clampRange(fromStr, toStr) {
   const lt = addDays(to, 1);
   return { from, lt };
 }
-function leadWhere({ from, lt, agent, outcome }) {
+function sanitizeOutcome(raw) {
+  if (raw === null || raw === undefined) return "";
+  return String(raw).trim().toUpperCase();
+}
+function toUTCDate(date) {
+  if (!(date instanceof Date)) return null;
+  return new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
+  );
+}
+function leadWhere({ from, lt, outcome }) {
   const where = {
     createdAt: { gte: from, lt },
   };
-  if (outcome) where.status = outcome;
-  if (agent) {
-    // Filter leads that have at least one call attempt by this agent
-    where.callAttempts = { some: { agentId: agent } };
+  if (outcome && LEAD_STATUS_SET.has(outcome)) {
+    where.status = outcome;
   }
   return where;
+}
+function attemptWhere({ from, lt, outcome }) {
+  const baseFilter = {
+    OR: [
+      { endedAt: { gte: from, lt } },
+      { endedAt: null, updatedAt: { gte: from, lt } },
+    ],
+  };
+
+  if (outcome) {
+    if (!ATTEMPT_STATUS_FINAL.includes(outcome)) {
+      return null;
+    }
+    return {
+      status: outcome,
+      ...baseFilter,
+    };
+  }
+
+  return {
+    status: { in: ATTEMPT_STATUS_FINAL },
+    ...baseFilter,
+  };
+}
+function attemptEffectiveDate(attempt) {
+  if (!attempt) return null;
+  return (
+    attempt.endedAt ||
+    attempt.updatedAt ||
+    attempt.scheduledAt ||
+    attempt.createdAt ||
+    null
+  );
+}
+function mapStatusToSeriesKey(status) {
+  return STATUS_KEY_MAP[status] || null;
 }
 
 /** ---------------- endpoints ---------------- */
@@ -55,31 +133,130 @@ function leadWhere({ from, lt, agent, outcome }) {
 r.get("/summary", assertJwt, async (req, res) => {
   try {
     const { from, lt } = clampRange(req.query.from, req.query.to);
-    const agent = req.query.agent || undefined;
-    const outcome = req.query.outcome || undefined;
+    const agent = req.query.agent || "";
+    const outcome = sanitizeOutcome(req.query.outcome);
+    const notes = [];
 
-    const whereBase = leadWhere({ from, lt, agent, outcome });
+    if (agent) {
+      notes.push(
+        "Agent filtering is not yet supported because call attempts do not store agent references."
+      );
+    }
 
-    // Today range (UTC-based)
-    const now = new Date();
-    const todayUTC = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+    const today = new Date();
+    const todayUTC = toUTCDate(today);
+    const tomorrowUTC = addDays(todayUTC, 1);
+
+    const todayWhere = leadWhere({ from: todayUTC, lt: tomorrowUTC, outcome });
+    const leadRangeWhere = leadWhere({ from, lt, outcome });
+    const attemptRangeWhere = attemptWhere({ from, lt, outcome });
+
+    const todayLeadsPromise = prisma.lead.count({ where: todayWhere });
+    const leadsInRangePromise = prisma.lead.count({ where: leadRangeWhere });
+    const leadsWithoutAttemptPromise = prisma.lead.count({
+      where: {
+        createdAt: { gte: from, lt },
+        callAttempts: {
+          none: {
+            status: { in: ATTEMPT_STATUS_COUNTABLE },
+          },
+        },
+      },
+    });
+    const openLeadsPromise = prisma.lead.count({
+      where: { status: { in: ["NEW", "SCHEDULED", "IN_PROGRESS"] } },
+    });
+    const overdueScheduledPromise = prisma.lead.count({
+      where: {
+        status: "SCHEDULED",
+        nextScheduledAt: { lt: new Date() },
+      },
+    });
+    const neverAttemptedTotalPromise = prisma.lead.count({
+      where: {
+        callAttempts: {
+          none: {
+            status: { in: ATTEMPT_STATUS_COUNTABLE },
+          },
+        },
+      },
+    });
+
+    const attemptsPromise = attemptRangeWhere
+      ? prisma.callAttempt.findMany({
+          where: attemptRangeWhere,
+          select: {
+            leadId: true,
+            status: true,
+            endedAt: true,
+            updatedAt: true,
+            scheduledAt: true,
+            createdAt: true,
+          },
+        })
+      : Promise.resolve([]);
+
+    const [
+      todayLeads,
+      leadsInRange,
+      leadsWithoutAttempt,
+      openLeads,
+      overdueScheduled,
+      totalLeadsNeverAttempted,
+      attempts,
+    ] = await Promise.all([
+      todayLeadsPromise,
+      leadsInRangePromise,
+      leadsWithoutAttemptPromise,
+      openLeadsPromise,
+      overdueScheduledPromise,
+      neverAttemptedTotalPromise,
+      attemptsPromise,
+    ]);
+
+    const attemptCounts = Object.create(null);
+    ATTEMPT_STATUS_FINAL.forEach((status) => {
+      attemptCounts[status] = 0;
+    });
+    const leadsTouched = new Set();
+
+    for (const attempt of attempts) {
+      if (attempt?.leadId) leadsTouched.add(attempt.leadId);
+      if (!(attempt.status in attemptCounts)) {
+        attemptCounts[attempt.status] = 0;
+      }
+      attemptCounts[attempt.status] += 1;
+    }
+
+    const totalAttempts = ATTEMPT_STATUS_FINAL.reduce(
+      (sum, status) => sum + (attemptCounts[status] || 0),
+      0
     );
-    const todayWhere = {
-      createdAt: { gte: todayUTC, lt: addDays(todayUTC, 1) },
-      ...(agent ? { callAttempts: { some: { agentId: agent } } } : {}),
-    };
+    const callsCompleted = ATTEMPT_STATUS_COUNTABLE.reduce(
+      (sum, status) => sum + (attemptCounts[status] || 0),
+      0
+    );
+    const answeredRate =
+      callsCompleted > 0 ? attemptCounts.ANSWERED / callsCompleted : 0;
 
-    const [todayLeads, answered, failed, noAnswer, voicemail] =
-      await Promise.all([
-        prisma.lead.count({ where: todayWhere }),
-        prisma.lead.count({ where: { ...whereBase, status: "ANSWERED" } }),
-        prisma.lead.count({ where: { ...whereBase, status: "FAILED" } }),
-        prisma.lead.count({ where: { ...whereBase, status: "NO_ANSWER" } }),
-        prisma.lead.count({ where: { ...whereBase, status: "VOICEMAIL" } }),
-      ]);
-
-    res.json({ todayLeads, answered, failed, noAnswer, voicemail });
+    res.json({
+      todayLeads,
+      leadsInRange,
+      leadsWithoutAttempt,
+      totalLeadsNeverAttempted,
+      leadsTouched: leadsTouched.size,
+      openLeads,
+      overdueScheduled,
+      callsCompleted,
+      totalAttempts,
+      answered: attemptCounts.ANSWERED || 0,
+      voicemail: attemptCounts.VOICEMAIL || 0,
+      noAnswer: attemptCounts.NO_ANSWER || 0,
+      failed: attemptCounts.FAILED || 0,
+      canceled: attemptCounts.CANCELED || 0,
+      answeredRate,
+      notes,
+    });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: "summary_failed" });
@@ -91,61 +268,69 @@ r.get("/summary", assertJwt, async (req, res) => {
 r.get("/timeseries", assertJwt, async (req, res) => {
   try {
     const { from, lt } = clampRange(req.query.from, req.query.to);
-    const agent = req.query.agent || undefined;
-    const outcome = req.query.outcome || undefined;
+    const outcome = sanitizeOutcome(req.query.outcome);
 
-    const where = leadWhere({ from, lt, agent, outcome });
+    const leadRangeWhere = leadWhere({ from, lt, outcome });
+    const attemptRangeWhere = attemptWhere({ from, lt, outcome });
 
-    // Pull only what we need and aggregate in JS (keeps it simple + Prisma-safe)
-    const leads = await prisma.lead.findMany({
-      where,
-      select: { createdAt: true, status: true },
+    const leadsPromise = prisma.lead.findMany({
+      where: leadRangeWhere,
+      select: { createdAt: true },
       orderBy: { createdAt: "asc" },
     });
 
-    // Make empty buckets for every date in range
+    const attemptsPromise = attemptRangeWhere
+      ? prisma.callAttempt.findMany({
+          where: attemptRangeWhere,
+          select: {
+            status: true,
+            endedAt: true,
+            updatedAt: true,
+            scheduledAt: true,
+            createdAt: true,
+          },
+        })
+      : Promise.resolve([]);
+
+    const [leads, attempts] = await Promise.all([
+      leadsPromise,
+      attemptsPromise,
+    ]);
+
     const buckets = {};
     for (let d = new Date(from); d < lt; d = addDays(d, 1)) {
-      buckets[dateKeyUTC(d)] = {
-        date: dateKeyUTC(d),
+      const key = dateKeyUTC(d);
+      buckets[key] = {
+        date: key,
         leads: 0,
         answered: 0,
-        failed: 0,
-        noAnswer: 0,
         voicemail: 0,
+        noAnswer: 0,
+        failed: 0,
+        canceled: 0,
       };
     }
 
-    // Fill buckets
-    for (const l of leads) {
-      const key = dateKeyUTC(
-        new Date(
-          Date.UTC(
-            l.createdAt.getUTCFullYear(),
-            l.createdAt.getUTCMonth(),
-            l.createdAt.getUTCDate()
-          )
-        )
-      );
-      const b = buckets[key];
-      if (!b) continue;
-      b.leads += 1;
-      switch (l.status) {
-        case "ANSWERED":
-          b.answered += 1;
-          break;
-        case "FAILED":
-          b.failed += 1;
-          break;
-        case "NO_ANSWER":
-          b.noAnswer += 1;
-          break;
-        case "VOICEMAIL":
-          b.voicemail += 1;
-          break;
-        default:
-          break;
+    for (const lead of leads) {
+      const day = toUTCDate(lead.createdAt);
+      if (!day) continue;
+      const key = dateKeyUTC(day);
+      if (buckets[key]) {
+        buckets[key].leads += 1;
       }
+    }
+
+    for (const attempt of attempts) {
+      const when = attemptEffectiveDate(attempt);
+      if (!when) continue;
+      const day = toUTCDate(when);
+      if (!day) continue;
+      const key = dateKeyUTC(day);
+      const bucket = buckets[key];
+      if (!bucket) continue;
+      const seriesKey = mapStatusToSeriesKey(attempt.status);
+      if (!seriesKey) continue;
+      bucket[seriesKey] = (bucket[seriesKey] || 0) + 1;
     }
 
     res.json(Object.values(buckets));
@@ -160,25 +345,27 @@ r.get("/timeseries", assertJwt, async (req, res) => {
 r.get("/outcomes", assertJwt, async (req, res) => {
   try {
     const { from, lt } = clampRange(req.query.from, req.query.to);
-    const agent = req.query.agent || undefined;
-    const outcome = req.query.outcome || undefined;
+    const outcome = sanitizeOutcome(req.query.outcome);
 
-    const where = leadWhere({ from, lt, agent, outcome });
+    const attemptRangeWhere = attemptWhere({ from, lt, outcome });
+    if (!attemptRangeWhere) {
+      return res.json([]);
+    }
 
-    // Pull statuses and count in JS (simple + portable)
-    const rows = await prisma.lead.findMany({
-      where,
-      select: { status: true },
+    const groups = await prisma.callAttempt.groupBy({
+      by: ["status"],
+      where: attemptRangeWhere,
+      _count: { _all: true },
     });
 
-    const counts = rows.reduce((acc, r) => {
-      acc[r.status] = (acc[r.status] || 0) + 1;
+    const counts = groups.reduce((acc, row) => {
+      acc[row.status] = row._count?._all ?? 0;
       return acc;
-    }, {});
+    }, Object.create(null));
 
-    const result = Object.entries(counts).map(([status, count]) => ({
+    const result = ATTEMPT_STATUS_FINAL.map((status) => ({
       outcome: status,
-      count,
+      count: counts[status] || 0,
     }));
 
     res.json(result);

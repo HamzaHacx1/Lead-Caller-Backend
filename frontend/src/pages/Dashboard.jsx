@@ -23,6 +23,7 @@ const COLORS = {
   voicemail: "#F59E0B",
   noAnswer: "#9CA3AF",
   failed: "#EF4444",
+  canceled: "#6366F1",
 };
 
 /** ---------- tiny utils ---------- */
@@ -46,6 +47,13 @@ function withQuery(path, params) {
     if (v !== undefined && v !== null && `${v}`.length) q.set(k, v);
   });
   return `${path}?${q.toString()}`;
+}
+function formatPercent(value) {
+  if (!Number.isFinite(value) || value <= 0) return "0%";
+  if (value >= 0.999) return "100%";
+  const scaled = value * 100;
+  const digits = scaled >= 10 ? 1 : 2;
+  return `${scaled.toFixed(digits)}%`;
 }
 
 /** ---------- Dashboard ---------- */
@@ -125,9 +133,38 @@ export default function Dashboard() {
   }, [autoRefresh, from, to, agent, outcome]);
 
   const totalLeads = useMemo(() => {
+    if (typeof stats?.leadsInRange === "number") return stats.leadsInRange;
     if (!series?.length) return 0;
     return series.reduce((acc, d) => acc + (d.leads || 0), 0);
-  }, [series]);
+  }, [series, stats]);
+
+  const callsCompleted = stats?.callsCompleted ?? 0;
+  const answeredRate = stats?.answeredRate ?? 0;
+  const leadsWithoutAttempt = stats?.leadsWithoutAttempt ?? 0;
+  const openLeads = stats?.openLeads ?? 0;
+  const overdueScheduled = stats?.overdueScheduled ?? 0;
+  const totalLeadsNeverAttempted = stats?.totalLeadsNeverAttempted ?? 0;
+  const leadsTouched = stats?.leadsTouched ?? 0;
+  const totalAttempts = stats?.totalAttempts ?? 0;
+
+  const advisoryNotes = useMemo(() => {
+    const items = [...(stats?.notes ?? [])];
+    if (leadsWithoutAttempt > 0) {
+      items.push(
+        `${leadsWithoutAttempt} lead${
+          leadsWithoutAttempt === 1 ? "" : "s"
+        } in this range still have no completed call attempt. Check intake or scheduling.`
+      );
+    }
+    if (overdueScheduled > 0) {
+      items.push(
+        `${overdueScheduled} scheduled lead${
+          overdueScheduled === 1 ? "" : "s"
+        } are past their planned call time. Review the calls worker queue.`
+      );
+    }
+    return items;
+  }, [stats, leadsWithoutAttempt, overdueScheduled]);
 
   return (
     <div className="space-y-6">
@@ -209,10 +246,9 @@ export default function Dashboard() {
           >
             <option value="">All outcomes</option>
             <option value="ANSWERED">Answered</option>
-            <option value="FAILED">Failed</option>
-            <option value="NO_ANSWER">No Answer</option>
             <option value="VOICEMAIL">Voicemail</option>
-            <option value="SCHEDULED">Scheduled</option>
+            <option value="NO_ANSWER">No Answer</option>
+            <option value="FAILED">Failed</option>
             <option value="CANCELED">Canceled</option>
           </select>
         </div>
@@ -242,14 +278,49 @@ export default function Dashboard() {
         <div className="text-sm text-red-600">{err}</div>
       ) : (
         <>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
             <StatCard label="Leads (range)" value={totalLeads} />
             <StatCard label="Leads Today" value={stats?.todayLeads ?? 0} />
-            <StatCard label="Answered" value={stats?.answered ?? 0} />
-            <StatCard label="Failed" value={stats?.failed ?? 0} />
-            <StatCard label="No Answer" value={stats?.noAnswer ?? 0} />
-            <StatCard label="Voicemail" value={stats?.voicemail ?? 0} />
+            <StatCard label="Calls Completed" value={callsCompleted} />
+            <StatCard label="Total Attempts" value={totalAttempts} />
+            <StatCard label="Answered Calls" value={stats?.answered ?? 0} />
+            <StatCard label="Contact Rate" value={formatPercent(answeredRate)} />
           </div>
+
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+            <StatCard label="Voicemail" value={stats?.voicemail ?? 0} />
+            <StatCard label="No Answer" value={stats?.noAnswer ?? 0} />
+            <StatCard label="Failed" value={stats?.failed ?? 0} />
+            <StatCard label="Canceled" value={stats?.canceled ?? 0} />
+            <StatCard label="Leads touched (range)" value={leadsTouched} />
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <StatCard
+              label="Leads w/out completed attempt (range)"
+              value={leadsWithoutAttempt}
+            />
+            <StatCard label="Open Leads (all)" value={openLeads} />
+            <StatCard
+              label="Overdue scheduled (all)"
+              value={overdueScheduled}
+            />
+            <StatCard
+              label="Never attempted (all)"
+              value={totalLeadsNeverAttempted}
+            />
+          </div>
+
+          {advisoryNotes.length > 0 && (
+            <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+              <div className="font-semibold">Heads up</div>
+              <ul className="mt-1 list-disc space-y-1 pl-5">
+                {advisoryNotes.map((note, idx) => (
+                  <li key={idx}>{note}</li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           {/* Charts */}
           <div className="grid gap-6 lg:grid-cols-2">
@@ -312,7 +383,7 @@ export default function Dashboard() {
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart
                     data={outcomes.map((d) => ({
-                      outcome: d.outcome?.replace("_", " "),
+                      outcome: d.outcome?.replace(/_/g, " "),
                       raw: d.outcome,
                       count: d.count,
                     }))}
@@ -340,6 +411,8 @@ export default function Dashboard() {
                             ? COLORS.noAnswer
                             : key === "FAILED"
                             ? COLORS.failed
+                            : key === "CANCELED"
+                            ? COLORS.canceled
                             : COLORS.leads;
                         return <Cell key={`cell-${idx}`} fill={color} />;
                       })}
@@ -391,6 +464,12 @@ export default function Dashboard() {
                     stackId="a"
                     name="Failed"
                     fill={COLORS.failed}
+                  />
+                  <Bar
+                    dataKey="canceled"
+                    stackId="a"
+                    name="Canceled"
+                    fill={COLORS.canceled}
                   />
                 </BarChart>
               </ResponsiveContainer>
