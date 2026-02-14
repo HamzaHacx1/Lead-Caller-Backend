@@ -1551,4 +1551,30 @@ r.post("/elevenlabs", async (req, res) => {
   }
 });
 
+r.post("/cheque-uploaded", async (req, res)=>{
+
+  try {
+    const { email, phone } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: "Missing email" });
+    }
+    if (!phone) {
+      return res.status(400).json({ error: "Missing phone" });
+    }
+
+    const lead = await prisma.lead.updateMany({
+      where: { email },
+      data: {
+        chequeUploaded: true,
+      },
+    });
+
+    return res.json({ success: true, lead });
+  } catch (err) {
+    console.error("Error updating user cheque status", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+})
+
 export default r;
